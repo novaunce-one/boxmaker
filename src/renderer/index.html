@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Lock the renderer down: no remote content, no inline eval beyond what Vite needs. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self'"
+    />
+    <title>boxmaker</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <header>
+          <h1>boxmaker</h1>
+          <p class="status">Engrave images into a jewelry-box STL.</p>
+        </header>
+        <section id="controls"><!-- ui/controls.ts mounts here --></section>
+      </aside>
+      <main id="viewport"><!-- ui/viewer.ts (Three.js canvas) mounts here --></main>
+      <section id="editor" hidden><!-- ui/placement-editor.ts mounts here --></section>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

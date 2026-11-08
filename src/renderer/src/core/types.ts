@@ -94,3 +94,22 @@ export const DEFAULT_MARGIN_MM = 2
 
 /** Minimum material left behind by any cut, in mm (wall-thickness guard). */
 export const MIN_WALL_MM = 0.8
+
+/** One face together with the images placed on it. */
+export interface FaceWork {
+  face: FacePlane
+  placements: Placement[]
+}
+
+/**
+ * The full editable project state — the unit the undo/redo `History` snapshots.
+ * Decoded images (`Placement.image`) are shared by reference across snapshots;
+ * only transforms and cut settings are duplicated per snapshot.
+ */
+export interface ProjectState {
+  faces: FaceWork[]
+  /** Project-wide edge margin in mm. */
+  marginMm: number
+}
+
+export const EMPTY_PROJECT: ProjectState = { faces: [], marginMm: DEFAULT_MARGIN_MM }

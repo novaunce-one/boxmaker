@@ -82,6 +82,58 @@ export function connectedComponents(mesh: IndexedMesh): MeshPiece[] {
   return pieces
 }
 
+/** Absolute enclosed volume of a (closed) component, in mm³. */
+export function componentVolume(mesh: IndexedMesh): number {
+  let v6 = 0
+  const tris = mesh.indices.length / 3
+  for (let t = 0; t < tris; t++) {
+    const a = mesh.indices[t * 3],
+      b = mesh.indices[t * 3 + 1],
+      c = mesh.indices[t * 3 + 2]
+    const ax = mesh.vertices[a * 3],
+      ay = mesh.vertices[a * 3 + 1],
+      az = mesh.vertices[a * 3 + 2]
+    const bx = mesh.vertices[b * 3],
+      by = mesh.vertices[b * 3 + 1],
+      bz = mesh.vertices[b * 3 + 2]
+    const cx = mesh.vertices[c * 3],
+      cy = mesh.vertices[c * 3 + 1],
+      cz = mesh.vertices[c * 3 + 2]
+    v6 += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)
+  }
+  return Math.abs(v6) / 6
+}
+
+export interface NoiseShellOptions {
+  /** Drop components with fewer triangles than this (a closed solid needs ≥ 4). */
+  minTriangles?: number
+  /** Drop components whose enclosed volume is below this (mm³). */
+  minVolume?: number
+}
+
+/**
+ * Remove stray "noise" shells — tiny disconnected components that are print
+ * artifacts, not real parts (SPEC §2 `FR-SHELL`). Defaults are deliberately
+ * conservative so legitimate small hinge parts (which are proper solids with
+ * real volume) are never dropped.
+ */
+export function removeNoiseShells(
+  pieces: MeshPiece[],
+  opts: NoiseShellOptions = {}
+): { kept: MeshPiece[]; removed: MeshPiece[] } {
+  const minTriangles = opts.minTriangles ?? 4
+  const minVolume = opts.minVolume ?? 1e-3
+  const kept: MeshPiece[] = []
+  const removed: MeshPiece[] = []
+  for (const p of pieces) {
+    const tris = p.mesh.indices.length / 3
+    const isNoise = tris < minTriangles || componentVolume(p.mesh) < minVolume
+    ;(isNoise ? removed : kept).push(p)
+  }
+  kept.forEach((p, i) => (p.id = i))
+  return { kept, removed }
+}
+
 function extractPiece(mesh: IndexedMesh, triList: number[]): IndexedMesh {
   const remap = new Map<number, number>()
   const verts: number[] = []

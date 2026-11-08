@@ -1,0 +1,341 @@
+# boxmaker — Software Specification
+
+> Derived from [docs/PLAN.md](PLAN.md) (planning conversation, 2026-11-07).
+> The plan is the rationale and decision log; this spec is the normative,
+> testable statement of what the software must do. Requirement IDs (e.g. `FR-3`)
+> are referenced by tests and commits.
+>
+> Keyword conventions: **MUST** / **MUST NOT** = required, **SHOULD** =
+> recommended, **MAY** = optional. Units are millimetres (mm) unless stated.
+
+---
+
+## 1. Overview
+
+### 1.1 Purpose
+boxmaker lets a user deboss (cut) uploaded images into the outer faces of a
+fixed, print-in-place hinged jewelry-box STL and export a printable STL, without
+damaging the print-in-place hinge.
+
+### 1.2 Scope
+- **In scope (v1):** load one hinged-box template STL, pick a coplanar outer
+  face, place/scale/rotate one or more images on it, tune the cut, preview the
+  result in 3D, and export an STL. Delivered as a browser app first, then an
+  Electron desktop app.
+- **Out of scope (v1):** arbitrary/unknown box models, embossing (raised) or
+  colored artwork, multi-material/3MF export, auto-updates, mobile.
+
+### 1.3 Delivery stages
+| Stage | Deliverable | Requirements in force |
+| --- | --- | --- |
+| 1 | Single-page browser app | All FR/NFR except `FR-DESK-*` |
+| 2 | Electron desktop app (macOS + Windows) | Adds `FR-DESK-*`; relaxes `FR-EXP-2` (.zip) |
+
+### 1.4 Definitions
+- **Template** — the supplied hinged-box STL used as the fixed starting model.
+- **Piece** — one connected component of the template mesh (lid, base, hinge pin…).
+- **Face** — a maximal set of coplanar, same-normal, edge-connected triangles on one piece.
+- **Placement** — an image positioned on a face in that face's (u, v) mm frame.
+- **Cutter** — the extruded solid subtracted from a piece to form an engraving.
+
+---
+
+## 2. Functional requirements
+
+### 2.1 Template loading (`FR-LOAD`)
+- **FR-LOAD-1** The app MUST load a binary STL template. ASCII STL MAY be
+  rejected with a clear message (see `ERR-STL-ASCII`).
+- **FR-LOAD-2** The browser build MUST persist the last-loaded template in
+  IndexedDB and restore it on next launch. The desktop build MUST load a
+  template bundled with the app (`resources/template.stl`).
+- **FR-LOAD-3** On load the app MUST split the template into pieces
+  (§2.6) and display it in the 3D view (§2.2), centered and fully visible.
+
+### 2.2 3D view & face picking (`FR-VIEW`)
+- **FR-VIEW-1** The view MUST render the template and support orbit, pan, and zoom.
+- **FR-VIEW-2** The view MUST be **Z-up** (`camera.up = (0,0,1)`), consistent
+  with the face-basis math (§2.3, `FR-FACE-3`).
+- **FR-VIEW-3** Clicking a surface MUST raycast to a triangle and flood-fill its
+  coplanar face (§2.3), highlighting the whole face.
+- **FR-VIEW-4** The view MUST update the engraving preview as placements/cut
+  settings change, debounced (§4, NFR-PERF-1).
+
+### 2.3 Face detection (`FR-FACE`)
+- **FR-FACE-1** A face MUST be the set of triangles reachable from the seed
+  triangle by crossing shared edges while staying within an angle tolerance
+  (default 1°) and plane-offset tolerance (default 0.05 mm).
+- **FR-FACE-2** Face detection MUST operate on the welded, indexed mesh of the
+  piece that owns the seed triangle, and MUST record that `pieceId`.
+- **FR-FACE-3** For a face with outward unit normal `n`, the in-plane basis
+  MUST be:
+  - side faces (|n·Z| ≤ 0.99): `v` = world +Z projected onto the plane; `u = v × n`;
+  - top/bottom faces (|n·Z| > 0.99): `v` = world +Y projected onto the plane; `u = v × n`.
+  The basis MUST be right-handed so that `u × v = n` (image reads correctly from
+  outside the box — i.e. not mirrored).
+- **FR-FACE-4** v1 MUST allow picking any outer face. Whether the lid underside
+  is selectable is gated on `OQ-4` (§8).
+
+### 2.4 Image placement editor (`FR-EDIT`)
+- **FR-EDIT-1** Selecting a face MUST open a 2D editor showing that face's
+  outline and the margin inset (§2.5).
+- **FR-EDIT-2** The user MUST be able to add one or more images to a face from a
+  file. Each face MAY hold several placements.
+- **FR-EDIT-3** A placement MUST be movable (drag), resizable with **locked
+  aspect ratio** (handles), and rotatable about the face normal (handle), with
+  equivalent numeric entry in exact mm / degrees.
+- **FR-EDIT-4** The editor MUST show a live preview of the thresholded binary
+  mask (§2.7) for each placement.
+- **FR-EDIT-5** The editor MUST prevent a placement's artwork from crossing the
+  margin inset (§2.5, `FR-HINGE-2`); it MAY clip or block the move.
+
+### 2.5 Cut settings (`FR-CUT`)
+- **FR-CUT-1** Per placement the user MUST control: threshold (0–255), invert
+  (bool), depth (mm), and edge smoothing (mm). Defaults: threshold 128, invert
+  off, depth **0.6 mm**, smoothing 0.1 mm (`OQ-3`).
+- **FR-CUT-2** Edge margin MUST be adjustable per project; default **2 mm** (`OQ-3`).
+
+### 2.6 Piece splitting / hinge protection (`FR-HINGE`)
+- **FR-HINGE-1** The template MUST be split into connected components by welding
+  vertices within tolerance (default 1e-4 mm) and union-find over shared vertex
+  indices. Booleans MUST run only on the piece containing the selected face;
+  all other pieces MUST be passed through **unchanged** (byte-for-byte in the
+  exported model where feasible).
+- **FR-HINGE-2** Artwork MUST stay ≥ the edge margin from every edge of the face
+  (default 2 mm), keeping cuts clear of hinge knuckles and the lid lip.
+- **FR-HINGE-3** A wall-thickness guard MUST raycast inward (−normal) from
+  sample points across the artwork and cap depth so ≥ **0.8 mm** of material
+  remains; the app MUST warn if the user requests a deeper cut.
+- **FR-HINGE-4** Before export the app MUST run a break-through check confirming
+  no cut pierces a wall (e.g. removed-volume vs. cutter-volume, or re-raycast),
+  and MUST warn on failure.
+
+### 2.7 Image → mask → geometry (`FR-IMG`)
+- **FR-IMG-1** An image MUST be converted to grayscale (Rec. 601 luma),
+  thresholded, optionally inverted, into a binary mask (1 = cut, 0 = keep).
+- **FR-IMG-2** The mask MUST be downscaled so its long edge is ≈ 400 px before
+  tracing.
+- **FR-IMG-3** The mask MUST be traced with marching squares into contours
+  (outer rings + holes) and simplified at the smoothing tolerance.
+- **FR-IMG-4** Contours MUST build a manifold `CrossSection` using the **EvenOdd**
+  fill rule, then `simplify()`.
+- **FR-IMG-5** The app MUST flag artwork whose thinnest traced feature is below
+  ≈ 0.4 mm at the placed size (too fine for a 0.4 mm nozzle) with a warning.
+
+### 2.8 Engraving (boolean) pipeline (`FR-ENG`)
+For each placement on the selected face, the app MUST:
+- **FR-ENG-1** Clip the artwork to the face region: union the face's projected
+  triangles into a `CrossSection`, `offset(-margin)`, and intersect with the
+  artwork `CrossSection`.
+- **FR-ENG-2** Extrude the clipped cross-section to `depth + ε` and transform it
+  into place so the cutter starts ε **outside** the surface and extends `depth`
+  inward along −normal.
+- **FR-ENG-3** Subtract the cutter(s) from the owning piece and produce a
+  watertight manifold result.
+- **FR-ENG-4** The operation MUST NOT alter any other piece (see `FR-HINGE-1`).
+
+### 2.9 Export (`FR-EXP`)
+- **FR-EXP-1** Export MUST recombine the engraved piece with all untouched
+  pieces into a single STL.
+- **FR-EXP-2** Browser build: because the hosted artifact page only allows
+  certain download extensions, export MUST produce a **.zip containing the
+  .stl**. If hosted where `.stl` downloads are allowed, a plain `.stl` MAY be
+  produced. Desktop build: export MUST save a `.stl` directly via a native dialog.
+- **FR-EXP-3** The exported STL MUST be a valid binary STL re-loadable by the app.
+
+### 2.10 Desktop app (`FR-DESK`) — Stage 2
+- **FR-DESK-1** The renderer MUST run with `contextIsolation: true` and
+  `nodeIntegration: false`.
+- **FR-DESK-2** The preload MUST expose only the `BoxmakerApi` (§6) via
+  `contextBridge`: `openStl`, `saveStl`, `loadTemplate`.
+- **FR-DESK-3** The main process MUST implement native open/save dialogs, disk
+  access, and the bundled template; heavy mesh work MAY run here.
+- **FR-DESK-4** Packaging MUST produce a universal macOS `.dmg` (Apple Silicon +
+  Intel) and a Windows `.exe` (NSIS), built on their respective OS runners.
+
+### 2.11 Undo / redo (`FR-UNDO`)
+- **FR-UNDO-1** The app MUST maintain an undo/redo history of the editable
+  project state (`ProjectState`: per-face placements + cut settings + margin).
+- **FR-UNDO-2** Every committed edit — add/delete an image, move/resize/rotate a
+  placement, change a cut setting or the margin — MUST push one history entry.
+- **FR-UNDO-3** Undo MUST restore the previous state; redo MUST reapply it. The
+  redo branch MUST be cleared when a new edit is committed after an undo.
+- **FR-UNDO-4** Undo/redo MUST be reachable via sidebar buttons (disabled when
+  unavailable) and the accelerators Cmd/Ctrl+Z (undo) and Shift+Cmd/Ctrl+Z or
+  Ctrl+Y (redo).
+- **FR-UNDO-5** Loading a new template MUST reset the history. History depth MAY
+  be capped (default 100 steps); snapshots MUST share decoded images by
+  reference to bound memory.
+
+### 2.12 Export validation & repair (`FR-VALIDATE`, `FR-REPAIR`)
+Goal: the exported STL MUST NOT contain the defects an external repair tool
+(e.g. formware.co/onlinestlrepair) would fix — chiefly **non-manifold edges**
+and **reversed faces** (flipped/inconsistent normals).
+- **FR-VALIDATE-1** Before writing the STL the app MUST validate the assembled
+  mesh and detect: non-manifold edges, non-manifold vertices ("bowties"),
+  reversed faces (inconsistent winding), degenerate (zero-area) triangles,
+  duplicate triangles, open boundary edges (holes), unreferenced vertices,
+  non-finite (NaN/Inf) coordinates, and sliver (near-degenerate) triangles.
+- **FR-VALIDATE-2** Self-intersection detection is OUT OF SCOPE: the booleaned
+  piece is non-self-intersecting by construction (manifold-3d), and checking
+  pass-through pieces is not worth the O(n²) cost.
+- **FR-REPAIR-1** The app MUST automatically, before export, eliminate
+  non-manifold edges (split the shared edge so no edge is used by > 2
+  triangles), non-manifold vertices (the same split separates disjoint fans),
+  and reversed faces (make winding consistent per component, then orient outward
+  by signed volume). It MUST also drop degenerate, duplicate, and non-finite
+  triangles and unreferenced vertices.
+- **FR-REPAIR-2** Repair MUST preserve geometry (vertex positions MUST NOT move)
+  and MUST NOT fill holes or stitch boundaries (which could fuse the hinge).
+- **FR-REPAIR-3** Export MUST report which defects were repaired, and MUST
+  surface any remaining non-blocking problems (holes, slivers, tight clearances)
+  as warnings rather than silently shipping or silently altering the model.
+- **FR-REPAIR-4** After repair the mesh MUST satisfy `isExportable`: zero
+  non-manifold edges and vertices, zero reversed faces, zero degenerate and
+  duplicate triangles, zero non-finite coordinates. (Watertightness and slivers
+  are reported, not required — see §6 note on print-in-place templates.)
+
+### 2.13 Noise shells & hinge clearance (`FR-SHELL`, `FR-CLEAR`)
+- **FR-SHELL-1** The app MAY remove stray "noise" shells — tiny disconnected
+  components that are print artifacts, not real parts. Defaults MUST be
+  conservative (drop a component only if it has < 4 triangles or enclosed volume
+  < 1e-3 mm³) so legitimate small hinge parts are never discarded. Removal MUST
+  be reported.
+- **FR-CLEAR-1** The app SHOULD measure the minimum gap between distinct pieces
+  and warn when a joint is closer than a printable clearance (configurable),
+  since sub-clearance gaps fuse when printed and destroy a print-in-place hinge.
+  The measure MAY be vertex-based (approximate) for performance.
+
+---
+
+## 3. Data model
+
+Authoritative TypeScript lives in `src/renderer/src/core/types.ts` and
+`src/shared/api.ts`; this section is the normative summary.
+
+| Type | Meaning | Key fields |
+| --- | --- | --- |
+| `TriangleMesh` | Raw STL triangle soup | `positions` (triCount·9), `normals?`, `triangleCount` |
+| `IndexedMesh` | Welded, indexed mesh | `vertices` (vtxCount·3), `indices` (triCount·3) |
+| `MeshPiece` | One connected component | `id`, `mesh: IndexedMesh` |
+| `FacePlane` | Selected coplanar face | `origin`, `normal`, `u`, `v`, `triangles[]`, `pieceId` |
+| `Placement` | Image on a face (mm frame) | `center`, `size`, `rotation`, `image`, `cut` |
+| `ImageSource` | Decoded pixels | `width`, `height`, `rgba` |
+| `CutSettings` | Per-placement cut controls | `threshold`, `invert`, `depth`, `smoothing` |
+| `FaceWork` | A face + its placements | `face`, `placements[]` |
+| `ProjectState` | Editable state (undo unit) | `faces: FaceWork[]`, `marginMm` |
+| `MeshDiagnostics` | Validation report | `nonManifoldEdges`, `nonManifoldVertices`, `inconsistentlyOrientedEdges`, `degenerateTriangles[]`, `duplicateTriangles`, `boundaryEdges`, `unreferencedVertices`, `nanVertices`, `sliverTriangles[]`, `isWatertight`, `isManifold` |
+| `ExportResult` | Export output | `stl`, `diagnostics`, `clean`, `repaired[]`, `warnings[]` |
+| `ClearanceReport` | Min inter-piece gap | `minGap`, `betweenPieces` |
+
+Constants (normative defaults): `DEFAULT_CUT` (threshold 128, invert false,
+depth 0.6, smoothing 0.1), `DEFAULT_MARGIN_MM = 2`, `MIN_WALL_MM = 0.8`,
+`EMPTY_PROJECT`, History limit 100.
+
+---
+
+## 4. Non-functional requirements
+
+- **NFR-PERF-1** Live preview updates MUST be debounced so edits stay
+  responsive; a single cut on the real template SHOULD complete within ~1 s on a
+  typical laptop.
+- **NFR-PORT-1** The `core/` and `ui/` code MUST be identical between the
+  browser and desktop builds; only the file-I/O shell differs (web shim vs.
+  `BoxmakerApi`).
+- **NFR-ROBUST-1** Manifold construction MUST fail loudly on a non-manifold
+  piece; the app MUST attempt repair (vertex merge with tolerance) and report
+  clearly if repair fails (`ERR-NONMANIFOLD`). Only the piece being cut must be
+  manifold.
+- **NFR-SEC-1** (desktop) The renderer MUST NOT have Node integration; all
+  privileged operations go through the typed preload bridge.
+- **NFR-TEST-1** `core/` is the primary test target; geometry steps MUST be
+  tested against the real template STL once supplied (§7).
+
+---
+
+## 5. Error & warning conditions
+
+| Code | Condition | Behavior |
+| --- | --- | --- |
+| `ERR-STL-ASCII` | ASCII STL supplied | Reject with message; ask for binary STL |
+| `ERR-STL-TRUNCATED` | Byte length < header+count·50 | Reject with message |
+| `ERR-NONMANIFOLD` | Selected piece not manifold after repair | Block cut; explain |
+| `WARN-DEPTH` | Requested depth leaves < 0.8 mm wall | Warn; cap at guard |
+| `WARN-FINE` | Feature < ~0.4 mm at placed size | Warn; allow override |
+| `WARN-BREAKTHROUGH` | Pre-export check finds a through-cut | Warn; allow override/cancel |
+| `INFO-REPAIRED` | Repair fixed non-manifold edges/vertices, reversed faces, etc. on export | Inform; list fixes |
+| `WARN-HOLES` | Final mesh still has open edges (not watertight) | Warn (non-blocking); allow export |
+| `WARN-SLIVER` | Non-degenerate but very thin triangles present | Warn (non-blocking) |
+| `WARN-CLEARANCE` | Two pieces closer than the printable clearance | Warn (non-blocking); joint may fuse |
+| `INFO-NOISE` | Stray noise shells removed | Inform; list removed |
+
+---
+
+## 6. IPC / API contract (desktop)
+
+Defined in `src/shared/api.ts`, imported by both main and renderer.
+
+```ts
+interface BoxmakerApi {
+  openStl(): Promise<StlFile | null>           // channel "stl:open"
+  saveStl(fileName: string, data: Uint8Array)  // channel "stl:save"
+    : Promise<SaveResult>
+  loadTemplate(): Promise<StlFile>             // channel "template:load"
+}
+interface StlFile { name: string; data: Uint8Array }
+interface SaveResult { canceled: boolean; filePath?: string }
+```
+
+- The browser build MUST provide a web shim implementing the same interface
+  (file input for open, `.zip` download for save, IndexedDB for template).
+
+---
+
+## 7. Acceptance criteria & test plan
+
+Traceable to the FR IDs; Vitest targets `core/`.
+
+| Test | Verifies |
+| --- | --- |
+| STL round-trip (write→parse equal) | `FR-LOAD-1`, `FR-EXP-3` ✅ implemented |
+| Two disjoint tris → 2 pieces; shared-edge quad → 1 piece | `FR-HINGE-1` ✅ implemented |
+| `u × v = n` for ±X/±Y/±Z normals | `FR-FACE-3` ✅ implemented |
+| Dark pixel cut, light pixel kept | `FR-IMG-1` ✅ implemented |
+| Undo/redo sequence, redo-branch clear, limit, reset | `FR-UNDO-1/3/5` ✅ implemented |
+| Non-manifold edge detected, then repaired to 0 on export | `FR-VALIDATE-1`, `FR-REPAIR-1/4` ✅ implemented |
+| Reversed face detected, then repaired to consistent/outward | `FR-VALIDATE-1`, `FR-REPAIR-1/4` ✅ implemented |
+| Degenerate/duplicate/unreferenced detected + removed | `FR-VALIDATE-1`, `FR-REPAIR-1` ✅ implemented |
+| Non-manifold vertex (bowtie) detected + repaired | `FR-VALIDATE-1`, `FR-REPAIR-1` ✅ implemented |
+| Non-finite coords detected + triangles dropped | `FR-VALIDATE-1`, `FR-REPAIR-1` ✅ implemented |
+| Sliver triangle flagged, not blocking | `FR-VALIDATE-1`, `WARN-SLIVER` ✅ implemented |
+| Noise shell removed; real solids kept | `FR-SHELL-1`, `INFO-NOISE` ✅ implemented |
+| Inter-piece gap measured; tight joint warned | `FR-CLEAR-1`, `WARN-CLEARANCE` ✅ implemented |
+| Export reports what it repaired; holes warned not blocked | `FR-REPAIR-3/4`, `WARN-HOLES` ✅ implemented |
+| Merge pieces offsets indices; STL re-parses | `FR-EXP-1/3` ✅ implemented |
+| Flood-fill isolates one face on the real template | `FR-FACE-1/2` — pending STL |
+| Marching-squares trace of a known mask → expected contour count | `FR-IMG-3/4` — pending |
+| Cut on real template leaves other pieces unchanged | `FR-HINGE-1`, `FR-ENG-4` — pending STL |
+| Depth guard caps at 0.8 mm wall; warns | `FR-HINGE-3`, `WARN-DEPTH` — pending |
+| Break-through check flags a through-cut | `FR-HINGE-4`, `WARN-BREAKTHROUGH` — pending |
+| End-to-end: load → place sample logo → cut → export valid STL | Stage 1 exit — pending STL + sample |
+
+**Stage 1 exit:** all FR/NFR (except `FR-DESK-*`) met and the end-to-end test
+passes with a real template + sample logo, page published.
+**Stage 2 exit:** `FR-DESK-*` met; signed/notarized builds gated separately.
+
+---
+
+## 8. Open questions (blockers from Lorn — see PLAN §9)
+
+- **OQ-1** The template STL (hinged jewelry box). *Blocks all pending tests.*
+- **OQ-2** One or two representative sample images.
+- **OQ-3** Confirm default cut depth / edge margin (proposed 0.6 mm / 2 mm).
+- **OQ-4** Is the lid underside ever engraved, or only outer faces? *Gates `FR-FACE-4`.*
+
+---
+
+## 9. Traceability to tech stack (PLAN §7)
+
+TypeScript · Three.js 0.187.0 (view, raycast, STLLoader, mergeVertices) ·
+manifold-3d 3.5.4 WASM (components, CrossSection, extrude, boolean subtract) ·
+Canvas API (threshold, tracing) · Vite / electron-vite / electron-builder ·
+Vitest. Versions were latest on npm as of 2026-11-07.

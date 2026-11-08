@@ -67,3 +67,19 @@ button {
 button:hover {
   filter: brightness(1.1);
 }
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+  filter: none;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.row button {
+  flex: 1;
+}

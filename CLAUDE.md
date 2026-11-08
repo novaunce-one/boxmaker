@@ -8,7 +8,9 @@ app, then as an Electron desktop app for Mac + Windows.
 (some implemented, some `throw "not implemented"` with `TODO(stageN-stepM)` markers).**
 
 The full plan — goals, decisions, cutting pipeline, hinge safeguards, tech stack, and
-build order — lives in [docs/PLAN.md](docs/PLAN.md). Read it before starting work.
+build order — lives in [docs/PLAN.md](docs/PLAN.md). The normative, testable
+specification (requirement IDs, acceptance criteria, API contract) is in
+[docs/SPEC.md](docs/SPEC.md). Read both before starting work.
 
 ## Commands
 - `npm run dev` — electron-vite dev server (requires the Electron binary; see note below).
@@ -48,9 +50,15 @@ Path aliases: `@core`, `@ui`, `@shared`, `@renderer` (see electron.vite.config.t
 tsconfig.web.json / vitest.config.ts).
 
 `core/` is implemented for STL I/O, vertex welding, connected-component splitting (the hinge
-safeguard), the face coordinate basis, and image thresholding. Marching-squares tracing, the
-manifold cut pipeline, and the UI interactions are stubbed with `TODO(stageN-stepM)` markers
-matching the build order in PLAN.md §8.
+safeguard), noise-shell removal + inter-piece clearance (`components.ts`, `clearance.ts`),
+the face coordinate basis, image thresholding, undo/redo history (`history.ts`), and
+export-time mesh validation + repair (`validate.ts`, `repair.ts`, `export.ts`). The repair
+step guarantees the exported STL has **no non-manifold edges/vertices, no reversed faces,
+no degenerate/duplicate triangles, and no non-finite coordinates** (the defects an external
+repair tool would fix); it preserves geometry and never fills holes (which could fuse the
+hinge). Holes, slivers, and tight clearances are reported as non-blocking warnings.
+Marching-squares tracing, the manifold cut pipeline, and the UI interactions are stubbed
+with `TODO(stageN-stepM)` markers matching PLAN.md §8.
 
 ## Still needed from the user before coding
 - The template STL, sample images, confirmed default cut depth/margin, and whether the lid

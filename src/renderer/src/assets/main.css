@@ -241,3 +241,51 @@ button.active {
   padding: 4px;
   width: 100%;
 }
+
+/* Browser-only File menu (desktop uses the native menu). */
+.file-menu {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.file-menu-toggle {
+  background: transparent;
+  border: 1px solid #000;
+  padding: 4px 10px;
+}
+
+.file-menu-pop {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  background: var(--panel);
+  border: 1px solid #000;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.file-menu-pop[hidden] {
+  display: none;
+}
+
+.file-menu-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  padding: 6px 10px;
+}
+
+.file-menu-item:hover:not(:disabled) {
+  background: var(--accent);
+  filter: none;
+}
+
+.file-menu-item .hint {
+  color: var(--muted);
+}

@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { detectFace } from '@core/faces'
+import { detectFace, findSeedTriangle } from '@core/faces'
 import { engraveFace, smoothRegion } from '@core/engrave'
 import type { FacePlane, IndexedMesh, MeshPiece, PreviewMode, ProjectState, Rect2 } from '@core/types'
 import { buildOverlayGroup } from './preview-overlay'
@@ -30,16 +30,20 @@ export class Viewer {
   private pickedFace: FacePlane | null = null
   private deEtch = false
   private dragStart: { x: number; y: number } | null = null
+  /** Set when a de-etch drag finishes so the trailing `click` doesn't re-pick a face. */
+  private suppressClick = false
   private readonly selectionDiv: HTMLDivElement
 
   /** Fired when the user clicks a face. */
   onPickFace: ((face: FacePlane) => void) | null = null
+  /** Fired when the picked face is deselected (click it again, or Escape). */
+  onDeselectFace: (() => void) | null = null
   /** Fired when the user rubber-band-selects a region on the picked face. */
   onSelectRegion: ((face: FacePlane, rect: Rect2) => void) | null = null
 
   constructor(private readonly container: HTMLElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true })
-    this.renderer.setPixelRatio(window.devicePixelRatio)
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.container.appendChild(this.renderer.domElement)
 
     this.selectionDiv = document.createElement('div')
@@ -55,9 +59,19 @@ export class Viewer {
     this.controls.enableDamping = true
 
     this.scene.background = new THREE.Color(0x1e1f22)
-    const key = new THREE.DirectionalLight(0xffffff, 2)
-    key.position.set(1, -1, 1)
-    this.scene.add(key, new THREE.AmbientLight(0xffffff, 0.6), this.modelGroup, this.highlightGroup)
+    // Lighting: a key light that follows the camera (so relief is always
+    // shaded from the viewer's side), plus soft sky/ground fill. A single fixed
+    // light left engraved recesses flat and unreadable from most angles.
+    const headlight = new THREE.DirectionalLight(0xffffff, 2.2)
+    headlight.position.set(0.6, 0.4, 1) // camera space: up-right of the view axis
+    this.camera.add(headlight, headlight.target)
+    headlight.target.position.set(0, 0, -1)
+    this.scene.add(
+      this.camera,
+      new THREE.HemisphereLight(0xffffff, 0x555560, 0.9),
+      this.modelGroup,
+      this.highlightGroup
+    )
 
     const el = this.renderer.domElement
     el.addEventListener('click', (e) => this.handleClick(e))
@@ -65,7 +79,9 @@ export class Viewer {
     el.addEventListener('pointermove', (e) => this.onPointerMove(e))
     window.addEventListener('pointerup', (e) => this.onPointerUp(e))
     this.resize()
-    window.addEventListener('resize', () => this.resize())
+    // Track the container itself (not just the window) so the drawing buffer
+    // always matches its on-screen size; a stale buffer is stretched and blurry.
+    new ResizeObserver(() => this.resize()).observe(this.container)
   }
 
   /** Load the box pieces (replaces any current model). */
@@ -115,16 +131,43 @@ export class Viewer {
   // --- picking ------------------------------------------------------------
 
   private handleClick(e: MouseEvent): void {
-    if (this.deEtch || !this.onPickFace || this.pieces.size === 0) return
+    // A click that ends a rubber-band drag is not a pick.
+    if (this.suppressClick) {
+      this.suppressClick = false
+      return
+    }
+    if (!this.onPickFace || this.pieces.size === 0) return
     const hit = this.raycast(e)
-    if (!hit || hit.faceIndex == null) return
+    if (!hit || !hit.face) return
     const pieceId = (hit.object as THREE.Mesh).userData.pieceId as number
     const entry = this.pieces.get(pieceId)
     if (!entry) return
-    const face = detectFace(entry.original, hit.faceIndex, pieceId)
+    // The mesh on screen may be a de-etched or cut version of the piece, whose
+    // triangle numbering differs from `entry.original` (which FacePlanes index).
+    // Map the hit position back onto the original so face identity stays stable.
+    const seed = findSeedTriangle(
+      entry.original,
+      [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z],
+      [hit.point.x, hit.point.y, hit.point.z]
+    )
+    if (seed < 0) return
+    // Clicking the already-selected face toggles it off.
+    if (this.pickedFace && this.pickedFace.pieceId === pieceId && this.pickedFace.triangles.includes(seed)) {
+      this.clearSelection()
+      return
+    }
+    const face = detectFace(entry.original, seed, pieceId)
     this.pickedFace = face
     this.highlightFace(entry.original, face)
     this.onPickFace(face)
+  }
+
+  /** Deselect the picked face: drop the highlight and notify the app. */
+  clearSelection(): void {
+    if (!this.pickedFace) return
+    this.pickedFace = null
+    this.highlightGroup.clear()
+    this.onDeselectFace?.()
   }
 
   private raycast(e: MouseEvent): THREE.Intersection | undefined {
@@ -159,6 +202,7 @@ export class Viewer {
   // --- rubber-band de-etch selection -------------------------------------
 
   private onPointerDown(e: PointerEvent): void {
+    this.suppressClick = false // drop a stale flag (e.g. drag released off-canvas)
     if (!this.deEtch || !this.pickedFace) return
     const rect = this.renderer.domElement.getBoundingClientRect()
     this.dragStart = { x: e.clientX - rect.left, y: e.clientY - rect.top }
@@ -187,6 +231,11 @@ export class Viewer {
     const start = this.dragStart
     this.dragStart = null
     const rectEl = this.renderer.domElement.getBoundingClientRect()
+    // A press-and-release without real movement is a click: let it pick a new
+    // face (handled by the `click` event) instead of selecting a region.
+    const moved = Math.hypot(e.clientX - rectEl.left - start.x, e.clientY - rectEl.top - start.y)
+    if (moved < DRAG_THRESHOLD_PX) return
+    this.suppressClick = true
     const a = this.projectToFace(start.x, start.y, rectEl, this.pickedFace)
     const b = this.projectToFace(e.clientX - rectEl.left, e.clientY - rectEl.top, rectEl, this.pickedFace)
     if (!a || !b) return
@@ -290,11 +339,98 @@ export class Viewer {
   }
 }
 
+/** Pointer travel (px) below which a de-etch press is treated as a click-to-pick. */
+const DRAG_THRESHOLD_PX = 4
+
+/** Edges sharper than this stay crisp; shallower ones are smoothed (curves, hinge barrels). */
+const CREASE_ANGLE_DEG = 35
+
+/**
+ * Non-indexed geometry with crease-aware normals. Plain `computeVertexNormals()`
+ * on the welded mesh averages normals across every sharp edge, which blurs
+ * engraved edges and flat faces into a mushy gradient and hides fine detail.
+ * Triangle order is preserved, so raycast `faceIndex` still equals the core
+ * mesh triangle index (face picking relies on this).
+ */
 function toGeometry(mesh: IndexedMesh): THREE.BufferGeometry {
+  const { vertices, indices } = mesh
+  const triCount = indices.length / 3
+  const vtxCount = vertices.length / 3
+
+  // Area-weighted face normals (unnormalized cross product) + unit copies.
+  const faceN = new Float32Array(triCount * 3)
+  const faceU = new Float32Array(triCount * 3)
+  for (let t = 0; t < triCount; t++) {
+    const a = indices[t * 3] * 3,
+      b = indices[t * 3 + 1] * 3,
+      c = indices[t * 3 + 2] * 3
+    const ux = vertices[b] - vertices[a],
+      uy = vertices[b + 1] - vertices[a + 1],
+      uz = vertices[b + 2] - vertices[a + 2]
+    const vx = vertices[c] - vertices[a],
+      vy = vertices[c + 1] - vertices[a + 1],
+      vz = vertices[c + 2] - vertices[a + 2]
+    const nx = uy * vz - uz * vy,
+      ny = uz * vx - ux * vz,
+      nz = ux * vy - uy * vx
+    const len = Math.hypot(nx, ny, nz) || 1
+    faceN[t * 3] = nx
+    faceN[t * 3 + 1] = ny
+    faceN[t * 3 + 2] = nz
+    faceU[t * 3] = nx / len
+    faceU[t * 3 + 1] = ny / len
+    faceU[t * 3 + 2] = nz / len
+  }
+
+  // vertex -> incident triangles (CSR layout).
+  const start = new Uint32Array(vtxCount + 1)
+  for (let i = 0; i < indices.length; i++) start[indices[i] + 1]++
+  for (let v = 0; v < vtxCount; v++) start[v + 1] += start[v]
+  const fill = start.slice(0, vtxCount)
+  const incident = new Uint32Array(indices.length)
+  for (let t = 0; t < triCount; t++) {
+    for (let k = 0; k < 3; k++) incident[fill[indices[t * 3 + k]]++] = t
+  }
+
+  const cosCrease = Math.cos((CREASE_ANGLE_DEG * Math.PI) / 180)
+  const positions = new Float32Array(triCount * 9)
+  const normals = new Float32Array(triCount * 9)
+  for (let t = 0; t < triCount; t++) {
+    for (let k = 0; k < 3; k++) {
+      const vi = indices[t * 3 + k]
+      const o = t * 9 + k * 3
+      positions[o] = vertices[vi * 3]
+      positions[o + 1] = vertices[vi * 3 + 1]
+      positions[o + 2] = vertices[vi * 3 + 2]
+      let sx = 0,
+        sy = 0,
+        sz = 0
+      for (let j = start[vi]; j < start[vi + 1]; j++) {
+        const n = incident[j]
+        const dot =
+          faceU[t * 3] * faceU[n * 3] + faceU[t * 3 + 1] * faceU[n * 3 + 1] + faceU[t * 3 + 2] * faceU[n * 3 + 2]
+        if (dot >= cosCrease) {
+          sx += faceN[n * 3]
+          sy += faceN[n * 3 + 1]
+          sz += faceN[n * 3 + 2]
+        }
+      }
+      const len = Math.hypot(sx, sy, sz)
+      if (len > 0) {
+        normals[o] = sx / len
+        normals[o + 1] = sy / len
+        normals[o + 2] = sz / len
+      } else {
+        normals[o] = faceU[t * 3]
+        normals[o + 1] = faceU[t * 3 + 1]
+        normals[o + 2] = faceU[t * 3 + 2]
+      }
+    }
+  }
+
   const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(mesh.vertices), 3))
-  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(mesh.indices), 1))
-  geo.computeVertexNormals()
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
   return geo
 }
 

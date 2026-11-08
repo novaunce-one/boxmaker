@@ -1,6 +1,7 @@
 import { manifold } from './manifold'
 import { toBinaryMask, traceContours } from './image-trace'
 import { componentVolume } from './components'
+import { rebindFace } from './faces'
 import { validateMesh } from './validate'
 import { repairMesh } from './repair'
 import { MIN_WALL_MM, type FacePlane, type IndexedMesh, type MeshPiece, type Placement, type ProjectState, type Rect2, type Vec2, type Vec3 } from './types'
@@ -37,6 +38,10 @@ export function engraveFace(
   if (placements.length === 0) return { piece, warnings: [] }
   const { CrossSection } = manifold()
   const warnings: string[] = []
+
+  // `face.triangles` index the piece as originally loaded; `piece` may be a
+  // de-etched (re-triangulated) version, so re-derive the face on it.
+  face = rebindFace(piece.mesh, face)
 
   let solid = toManifold(piece.mesh)
   const clip = buildFaceRegion(piece.mesh, face, CrossSection).offset(-marginMm)

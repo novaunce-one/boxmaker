@@ -234,8 +234,14 @@ export function isExportable(d: MeshDiagnostics): boolean {
   )
 }
 
-/** Human-readable summary of the problems found, for warnings/dialogs. */
-export function describeDiagnostics(d: MeshDiagnostics): string[] {
+/**
+ * Human-readable summary of the problems found, for warnings/dialogs.
+ *
+ * `baselineSlivers`: sliver count already present in the unedited template. When
+ * given, only slivers beyond that are reported — the user can't fix the
+ * template's own, and slicers cope with them.
+ */
+export function describeDiagnostics(d: MeshDiagnostics, baselineSlivers?: number): string[] {
   const msgs: string[] = []
   if (d.nanVertices) msgs.push(`${d.nanVertices} vertex/vertices with non-finite coordinates`)
   if (d.degenerateTriangles.length) msgs.push(`${d.degenerateTriangles.length} degenerate triangle(s)`)
@@ -244,7 +250,12 @@ export function describeDiagnostics(d: MeshDiagnostics): string[] {
   if (d.nonManifoldVertices) msgs.push(`${d.nonManifoldVertices} non-manifold vertex/vertices`)
   if (d.inconsistentlyOrientedEdges) msgs.push(`${d.inconsistentlyOrientedEdges} flipped-normal edge(s)`)
   if (d.boundaryEdges) msgs.push(`${d.boundaryEdges} open edge(s) (holes / not watertight)`)
-  if (d.sliverTriangles.length) msgs.push(`${d.sliverTriangles.length} sliver triangle(s) (thin; may print poorly)`)
+  if (baselineSlivers === undefined) {
+    if (d.sliverTriangles.length) msgs.push(`${d.sliverTriangles.length} sliver triangle(s) (thin; may print poorly)`)
+  } else if (d.sliverTriangles.length > baselineSlivers) {
+    const added = d.sliverTriangles.length - baselineSlivers
+    msgs.push(`${added} more sliver triangle(s) than the template (thin; usually harmless to slicers)`)
+  }
   if (d.unreferencedVertices) msgs.push(`${d.unreferencedVertices} unreferenced vertex/vertices`)
   return msgs
 }

@@ -67,6 +67,13 @@ export interface PrepareOptions {
   repair?: boolean
   /** If set, warn when any two pieces sit closer than this (mm) — may fuse. */
   minClearanceMm?: number
+  /**
+   * The unedited template pieces. Lets export tell problems the template already
+   * had (which the user can't fix) from ones their edits introduced: slivers are
+   * reported only beyond the template's count, and a clearance warning notes
+   * whether the gap shrank.
+   */
+  reference?: MeshPiece[]
 }
 
 /**
@@ -96,14 +103,21 @@ export function prepareForExport(pieces: MeshPiece[], opts: PrepareOptions = {})
   if (before.duplicateTriangles > 0 && after.duplicateTriangles === 0) repaired.push('duplicate triangles')
   if (before.nanVertices > 0 && after.nanVertices === 0) repaired.push('non-finite coordinates')
 
-  const warnings = describeDiagnostics(after)
+  const baselineSlivers = opts.reference
+    ? validateMesh(mergePieces(opts.reference)).sliverTriangles.length
+    : undefined
+  const warnings = describeDiagnostics(after, baselineSlivers)
   if (opts.minClearanceMm !== undefined) {
     const clr = measureClearance(pieces, opts.minClearanceMm)
     if (clr.betweenPieces && clr.minGap < opts.minClearanceMm) {
-      warnings.push(
+      let note =
         `pieces ${clr.betweenPieces[0]} and ${clr.betweenPieces[1]} are ${clr.minGap.toFixed(3)} mm apart ` +
-          `(< ${opts.minClearanceMm} mm) and may fuse when printed`
-      )
+        `(< ${opts.minClearanceMm} mm) and may fuse when printed`
+      if (opts.reference) {
+        const was = measureClearance(opts.reference, opts.minClearanceMm).minGap
+        note += Math.abs(was - clr.minGap) < 1e-3 ? ' (same as the unedited template)' : ` (template: ${was.toFixed(3)} mm)`
+      }
+      warnings.push(note)
     }
   }
 

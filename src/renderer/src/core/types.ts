@@ -95,6 +95,13 @@ export const DEFAULT_MARGIN_MM = 2
 /** Minimum material left behind by any cut, in mm (wall-thickness guard). */
 export const MIN_WALL_MM = 0.8
 
+/**
+ * Smallest gap between separate pieces (hinge knuckles, pins) that still prints
+ * apart on a typical FDM printer. Print-in-place hinges are designed with
+ * ~0.2–0.5 mm; closer than this and the pieces fuse. NOT the wall thickness.
+ */
+export const MIN_CLEARANCE_MM = 0.2
+
 /** An axis-aligned rectangle in a face's (u,v) mm coordinates. */
 export interface Rect2 {
   min: Vec2

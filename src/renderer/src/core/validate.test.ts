@@ -107,6 +107,39 @@ describe('validateMesh — extra defect classes', () => {
   })
 })
 
+describe('prepareForExport — template baseline', () => {
+  const sliver: IndexedMesh = {
+    vertices: new Float32Array([0, 0, 0, 10, 0, 0, 5, 0.001, 0]),
+    indices: new Uint32Array([0, 1, 2])
+  }
+  const shifted = (m: IndexedMesh, dx: number): IndexedMesh => {
+    const v = new Float32Array(m.vertices)
+    for (let i = 0; i < v.length; i += 3) v[i] += dx
+    return { vertices: v, indices: new Uint32Array(m.indices) }
+  }
+
+  it('does not report slivers the template already had', () => {
+    const pieces = [{ id: 0, mesh: sliver }]
+    expect(prepareForExport(pieces).warnings.some((w) => /sliver/.test(w))).toBe(true) // no baseline
+    expect(prepareForExport(pieces, { reference: pieces }).warnings.some((w) => /sliver/.test(w))).toBe(false)
+  })
+
+  it('reports only the slivers beyond the template count', () => {
+    const edited = [{ id: 0, mesh: mergePieces([{ id: 0, mesh: sliver }, { id: 1, mesh: shifted(sliver, 50) }]) }]
+    const warnings = prepareForExport(edited, { reference: [{ id: 0, mesh: sliver }] }).warnings
+    expect(warnings.find((w) => /sliver/.test(w))).toMatch(/^1 more sliver/)
+  })
+
+  it('does not flag a 0.3 mm hinge gap against the 0.2 mm printable clearance', () => {
+    const a = { id: 0, mesh: TETRA }
+    const b = { id: 1, mesh: shifted(TETRA, 1.3) } // nearest vertices 0.3 mm apart in x
+    const ok = prepareForExport([a, b], { minClearanceMm: 0.2, reference: [a, b] })
+    expect(ok.warnings.some((w) => /fuse/.test(w))).toBe(false)
+    const tight = prepareForExport([a, b], { minClearanceMm: 0.8, reference: [a, b] })
+    expect(tight.warnings.find((w) => /fuse/.test(w))).toMatch(/same as the unedited template/)
+  })
+})
+
 describe('repairMesh', () => {
   it('fixes non-manifold edges by splitting the shared edge', () => {
     expect(validateMesh(NON_MANIFOLD).nonManifoldEdges).toBe(1)

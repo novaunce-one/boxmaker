@@ -232,6 +232,26 @@ For an imported box that already carries engraving:
   since sub-clearance gaps fuse when printed and destroy a print-in-place hinge.
   The measure MAY be vertex-based (approximate) for performance.
 
+### 2.16 Project files (`FR-PROJECT`)
+- **FR-PROJECT-1** The app MUST let the user **Save** and **Save As** the editable
+  project to a `.boxmaker` file, and **Open** one later. Shortcuts: Cmd/Ctrl+S
+  (save), Shift+Cmd/Ctrl+S (save as), Cmd/Ctrl+O (open).
+- **FR-PROJECT-2** A project file MUST be self-contained: the template STL, every
+  placed image (stored once, even if shared), and the `ProjectState` (placements,
+  cut settings, de-etch regions, margin). Undo history is NOT saved.
+- **FR-PROJECT-3** Save overwrites the file the project was opened from / last
+  saved to; Save As (and the first Save) asks for a destination. Loading a
+  template makes the project untitled.
+- **FR-PROJECT-4** The title MUST show the project name, with a `•` while there
+  are unsaved changes; actions that would discard them (open, load template)
+  MUST confirm first.
+- **FR-PROJECT-5** Opening MUST reject non-project or unsupported-version files
+  with a clear message, and MUST verify saved faces still index real triangles of
+  the embedded template (`checkProjectFits`).
+- **FR-PROJECT-6** Desktop: the renderer MAY only silently overwrite paths the
+  user previously chose in a native dialog (NFR-SEC-1). Browser: use the File
+  System Access API where available, else fall back to a download.
+
 ---
 
 ## 3. Data model
@@ -311,7 +331,10 @@ interface BoxmakerApi {
   openStl(): Promise<StlFile | null>           // channel "stl:open"
   saveStl(fileName: string, data: Uint8Array)  // channel "stl:save"
     : Promise<SaveResult>
-  loadTemplate(): Promise<StlFile>             // channel "template:load"
+  loadTemplate(): Promise<StlFile | null>      // channel "template:load"
+  openProject(): Promise<ProjectFile | null>   // channel "project:open"
+  saveProject(suggestedName: string, data: Uint8Array,
+              filePath?: string): Promise<SaveResult>  // channel "project:save"
 }
 interface StlFile { name: string; data: Uint8Array }
 interface SaveResult { canceled: boolean; filePath?: string }

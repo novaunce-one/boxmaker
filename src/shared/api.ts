@@ -19,12 +19,27 @@ export interface SaveResult {
   filePath?: string
 }
 
+/** A project file chosen in the open dialog. */
+export interface ProjectFile {
+  /** Base file name, e.g. `lid-test.boxmaker`. */
+  name: string
+  /** Absolute path; pass back to `saveProject` to overwrite it (Save). */
+  filePath: string
+  data: Uint8Array
+}
+
 /** IPC channel names, kept in one place so main and preload agree. */
 export const Channels = {
   openStl: 'stl:open',
   saveStl: 'stl:save',
-  loadTemplate: 'template:load'
+  loadTemplate: 'template:load',
+  openProject: 'project:open',
+  saveProject: 'project:save',
+  menuCommand: 'menu:command'
 } as const
+
+/** Actions the native File menu asks the renderer to perform. */
+export type MenuCommand = 'open-project' | 'save-project' | 'save-project-as'
 
 /**
  * The API surfaced to the renderer via `contextBridge`. In the browser-only
@@ -35,6 +50,20 @@ export interface BoxmakerApi {
   openStl(): Promise<StlFile | null>
   /** Open a save dialog and write `data` as a .stl file. */
   saveStl(fileName: string, data: Uint8Array): Promise<SaveResult>
-  /** Load the bundled template jewelry-box STL shipped with the app. */
-  loadTemplate(): Promise<StlFile>
+  /**
+   * Load the bundled template jewelry-box STL shipped with the app. If no
+   * template is bundled (resources/template.stl absent), falls back to an
+   * open-file dialog. Resolves null if the user cancels that dialog.
+   */
+  loadTemplate(): Promise<StlFile | null>
+  /** Open a native dialog and return the chosen `.boxmaker` project, or null if cancelled. */
+  openProject(): Promise<ProjectFile | null>
+  /**
+   * Write a project file. With `filePath` (one previously returned by
+   * `openProject`/`saveProject`) it overwrites that file silently (Save);
+   * without it a save dialog is shown (Save As / first save).
+   */
+  saveProject(suggestedName: string, data: Uint8Array, filePath?: string): Promise<SaveResult>
+  /** Subscribe to native File-menu commands. Returns an unsubscribe function. */
+  onMenuCommand(handler: (command: MenuCommand) => void): () => void
 }

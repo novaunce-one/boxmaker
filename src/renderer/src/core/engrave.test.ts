@@ -3,6 +3,7 @@ import { traceContours, tooFineForNozzle } from './image-trace'
 import { maskToRgba } from '../ui/preview-overlay'
 import { engraveFace, smoothRegion, wallThickness } from './engrave'
 import { componentVolume } from './components'
+import { findSeedTriangle, rebindFace } from './faces'
 import { initManifold } from './manifold'
 import type { BinaryMask } from './image-trace'
 import type { FacePlane, ImageSource, MeshPiece } from './types'
@@ -111,6 +112,41 @@ describe('smoothRegion (de-etch)', () => {
 
     expect(smoothedVol).toBeGreaterThan(etchedVol) // material added back
     expect(Math.abs(smoothedVol - full)).toBeLessThan(1) // ~flush with the surface
+  })
+})
+
+describe('face re-binding after de-etch', () => {
+  beforeAll(async () => {
+    await initManifold()
+  })
+
+  it('finds the same plane on a re-triangulated mesh and engraves it correctly', () => {
+    const cube = unitCube(20)
+    const placement = centeredPlacement(10, 10, 1)
+    const etched = engraveFace(cube, topFace(), [placement], 2).piece
+    // De-etch the whole top: the result is re-triangulated, so the original
+    // face's triangle indices no longer point at the top surface.
+    const smoothed = smoothRegion(etched, topFace(), [{ min: [-9, -9], max: [9, 9] }], 2).piece
+
+    const face = rebindFace(smoothed.mesh, topFace())
+    expect(face.origin).toEqual(topFace().origin)
+    expect(face.triangles.length).toBeGreaterThan(0)
+    for (const t of face.triangles) {
+      const z = [0, 1, 2].map((k) => smoothed.mesh.vertices[smoothed.mesh.indices[t * 3 + k] * 3 + 2])
+      expect(Math.max(...z) - Math.min(...z)).toBeLessThan(1e-6) // flat
+      expect(z[0]).toBeCloseTo(20, 4) // on the top plane
+    }
+
+    // Engraving the de-etched piece with the stale face still cuts it.
+    const { piece, warnings } = engraveFace(smoothed, topFace(), [placement], 2)
+    expect(warnings).toHaveLength(0)
+    expect(componentVolume(piece.mesh)).toBeLessThan(componentVolume(smoothed.mesh))
+  })
+
+  it('maps a point on a face back to a triangle on that face', () => {
+    const cube = unitCube(20)
+    const seed = findSeedTriangle(cube.mesh, [0, 0, 1], [5, 5, 20])
+    expect(topFace().triangles).toContain(seed)
   })
 })
 

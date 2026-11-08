@@ -35,6 +35,81 @@ export function downloadZip(name: string, data: Uint8Array): void {
   triggerDownload(`${base}.zip`, new Blob([zip], { type: 'application/zip' }))
 }
 
+// --- project files (browser) ---------------------------------------------
+// Chromium's File System Access API lets Save overwrite the same file. Other
+// browsers fall back to a download (Save = re-download, Save As = ask a name).
+
+/** The subset of FileSystemFileHandle we use (not in every TS DOM lib). */
+export interface WebFileHandle {
+  name: string
+  getFile(): Promise<File>
+  createWritable(): Promise<{ write(data: BlobPart): Promise<void>; close(): Promise<void> }>
+}
+
+interface FsAccessWindow {
+  showOpenFilePicker?: (opts: unknown) => Promise<WebFileHandle[]>
+  showSaveFilePicker?: (opts: unknown) => Promise<WebFileHandle>
+}
+
+const PROJECT_TYPES = [{ description: 'boxmaker project', accept: { 'application/json': ['.boxmaker'] } }]
+const fsAccess = (): FsAccessWindow => window as unknown as FsAccessWindow
+const isAbort = (e: unknown): boolean => e instanceof DOMException && e.name === 'AbortError'
+
+export interface OpenedProject {
+  name: string
+  data: Uint8Array
+  handle?: WebFileHandle
+}
+
+/** Ask for a project file; null if the user cancels. */
+export async function openProjectFile(): Promise<OpenedProject | null> {
+  if (fsAccess().showOpenFilePicker) {
+    try {
+      const [handle] = await fsAccess().showOpenFilePicker!({ types: PROJECT_TYPES })
+      const file = await handle.getFile()
+      return { name: file.name, data: new Uint8Array(await file.arrayBuffer()), handle }
+    } catch (e) {
+      if (isAbort(e)) return null
+      throw e
+    }
+  }
+  const { name, buffer } = await pickFile('.boxmaker,application/json')
+  return { name, data: new Uint8Array(buffer) }
+}
+
+/**
+ * Save a project. With a `handle` (and not `saveAs`) the file is overwritten in
+ * place; otherwise the user chooses a destination. Returns null on cancel.
+ */
+export async function saveProjectFile(
+  suggestedName: string,
+  data: Uint8Array,
+  handle: WebFileHandle | undefined,
+  saveAs: boolean
+): Promise<{ name: string; handle?: WebFileHandle } | null> {
+  if (fsAccess().showSaveFilePicker) {
+    try {
+      const target = handle && !saveAs ? handle : await fsAccess().showSaveFilePicker!({ suggestedName, types: PROJECT_TYPES })
+      const writable = await target.createWritable()
+      await writable.write(new Blob([data as BlobPart]))
+      await writable.close()
+      return { name: target.name, handle: target }
+    } catch (e) {
+      if (isAbort(e)) return null
+      throw e
+    }
+  }
+  let name = suggestedName
+  if (saveAs) {
+    const answer = window.prompt('Save project as:', suggestedName)
+    if (!answer) return null
+    name = answer
+  }
+  if (!/\.boxmaker$/i.test(name)) name += '.boxmaker'
+  triggerDownload(name, new Blob([data as BlobPart], { type: 'application/json' }))
+  return { name }
+}
+
 function triggerDownload(fileName: string, blob: Blob): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

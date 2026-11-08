@@ -6,6 +6,9 @@ import type { PreviewMode } from '@core/types'
  */
 export interface ControlsCallbacks {
   onLoadTemplate: () => void | Promise<void>
+  onOpenProject: () => void | Promise<void>
+  onSaveProject: () => void | Promise<void>
+  onSaveProjectAs: () => void | Promise<void>
   onAddImage: (file: File) => void | Promise<void>
   onPreviewModeChange: (mode: PreviewMode) => void
   onDeEtchModeChange: (on: boolean) => void
@@ -22,11 +25,15 @@ export class Controls {
   private cutBtn!: HTMLButtonElement
   private deEtchBtn!: HTMLButtonElement
   private exportBtn!: HTMLButtonElement
+  private saveItem: HTMLButtonElement | null = null
+  private saveAsItem: HTMLButtonElement | null = null
   private deEtchOn = false
 
   constructor(
     private readonly root: HTMLElement,
-    private readonly cb: ControlsCallbacks
+    private readonly cb: ControlsCallbacks,
+    /** `fileMenu`: render the in-page File menu (browser build only). */
+    private readonly opts: { fileMenu: boolean } = { fileMenu: false }
   ) {}
 
   render(): void {
@@ -65,7 +72,12 @@ export class Controls {
     // Export: assemble, repair, validate, and save (.stl desktop / .zip web).
     this.exportBtn = this.makeButton('Export STL…', () => void this.cb.onExport())
 
+    // Desktop uses the native File menu; the browser has none, so it gets an
+    // in-page one at the top of the sidebar.
+    const top: HTMLElement[] = this.opts.fileMenu ? [this.buildFileMenu()] : []
+
     this.root.replaceChildren(
+      ...top,
       loadBtn,
       label('Preview'),
       modeRow,
@@ -83,9 +95,63 @@ export class Controls {
     this.setModelLoaded(false)
   }
 
-  /** Export is only meaningful once a model is loaded. */
+  /** Export and saving are only meaningful once a model is loaded. */
   setModelLoaded(loaded: boolean): void {
     this.exportBtn.disabled = !loaded
+    if (this.saveItem) this.saveItem.disabled = !loaded
+    if (this.saveAsItem) this.saveAsItem.disabled = !loaded
+  }
+
+  /** Browser-only File menu: Open… / Save / Save As… (desktop uses the native menu). */
+  private buildFileMenu(): HTMLElement {
+    const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
+    const wrap = document.createElement('div')
+    wrap.className = 'file-menu'
+
+    const toggle = document.createElement('button')
+    toggle.className = 'file-menu-toggle'
+    toggle.textContent = 'File ▾'
+
+    const pop = document.createElement('div')
+    pop.className = 'file-menu-pop'
+    pop.hidden = true
+
+    const close = (): void => {
+      pop.hidden = true
+    }
+    const item = (text: string, hint: string, run: () => void | Promise<void>): HTMLButtonElement => {
+      const b = document.createElement('button')
+      b.className = 'file-menu-item'
+      const name = document.createElement('span')
+      name.textContent = text
+      const key = document.createElement('span')
+      key.className = 'hint'
+      key.textContent = hint
+      b.append(name, key)
+      b.addEventListener('click', () => {
+        close()
+        void run()
+      })
+      pop.appendChild(b)
+      return b
+    }
+
+    item('Open project…', `${mod}O`, () => this.cb.onOpenProject())
+    this.saveItem = item('Save', `${mod}S`, () => this.cb.onSaveProject())
+    this.saveAsItem = item('Save as…', `⇧${mod}S`, () => this.cb.onSaveProjectAs())
+
+    toggle.addEventListener('click', () => {
+      pop.hidden = !pop.hidden
+    })
+    document.addEventListener('click', (e) => {
+      if (!wrap.contains(e.target as Node)) close()
+    })
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close()
+    })
+
+    wrap.append(toggle, pop)
+    return wrap
   }
 
   /** Enable image placement / de-etch only once a face is selected. */

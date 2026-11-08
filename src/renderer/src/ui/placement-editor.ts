@@ -1,22 +1,18 @@
-import type { FacePlane, Placement } from '@core/types'
+import { DEFAULT_CUT, type FacePlane, type ImageSource, type Placement, type Vec2 } from '@core/types'
 
 /**
- * The 2D placement editor (docs/PLAN.md §3, step 3): shows the selected face's
- * outline with the margin inset, lets the user drag / aspect-locked resize /
- * rotate an image or type exact mm values, and previews the thresholded mask.
+ * The 2D placement editor (docs/PLAN.md §3, step 3). Full drag/resize/rotate
+ * handles land later; for now it provides the minimal placement needed to drive
+ * the live preview and undo/redo (SPEC §2 FR-EDIT).
  */
 export class PlacementEditor {
   private face: FacePlane | null = null
-  private placements: Placement[] = []
 
   constructor(private readonly root: HTMLElement) {}
 
-  /** Show the editor for a newly picked face. */
   open(face: FacePlane): void {
     this.face = face
-    this.placements = []
     this.root.hidden = false
-    // TODO(stage1-step3): render face outline + margin inset, handles, mm inputs.
   }
 
   close(): void {
@@ -24,12 +20,17 @@ export class PlacementEditor {
     this.root.hidden = true
   }
 
-  /** The face currently being edited, or null when the editor is closed. */
   get activeFace(): FacePlane | null {
     return this.face
   }
+}
 
-  getPlacements(): Placement[] {
-    return this.placements
-  }
+/**
+ * Build a centered placement for an image on a face: image "up" aligned to the
+ * face's v axis, a sensible default size, and the default cut settings.
+ */
+export function createCenteredPlacement(image: ImageSource, longEdgeMm = 30): Placement {
+  const aspect = image.width / image.height
+  const size: Vec2 = aspect >= 1 ? [longEdgeMm, longEdgeMm / aspect] : [longEdgeMm * aspect, longEdgeMm]
+  return { center: [0, 0], size, rotation: 0, image, cut: { ...DEFAULT_CUT } }
 }

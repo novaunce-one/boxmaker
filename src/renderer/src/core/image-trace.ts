@@ -49,18 +49,105 @@ export function toBinaryMask(
 export type Contour = Vec2[]
 
 /**
- * Trace `mask` into contours with marching squares, returning rings in
- * normalized [0,1] space (x right, y up) ready to scale into face mm.
+ * Trace `mask` into closed contours and return rings in normalized [0,1] space
+ * (x right, y **up**) ready to scale into face mm.
  *
- * TODO(stage1-step1): implement marching-squares tracing + contour
- * simplification (Douglas–Peucker at `smoothing` mm). Verify against the real
- * STL + a sample logo before wiring into the live preview.
+ * Method: marching squares by boundary-edge cancellation. Each cut pixel emits
+ * its 4 unit edges wound CCW (A→B→C→D); edges shared by two cut pixels occur in
+ * opposite directions and cancel, leaving only the region boundary as
+ * consistently-oriented directed edges. Those are stitched into loops, and runs
+ * of collinear points are merged so a rectangle yields 4 corners, not a long
+ * staircase. Outer rings and holes both fall out; feed the result to a
+ * CrossSection with the EvenOdd fill rule.
  */
-export function traceContours(_mask: BinaryMask, _smoothingMm = 0.1): Contour[] {
-  throw new Error('traceContours: marching-squares tracing not implemented yet (Stage 1, step 1).')
+export function traceContours(mask: BinaryMask, _smoothingMm = 0.1): Contour[] {
+  const { width: w, height: h, bits } = mask
+  const vid = (x: number, y: number): number => y * (w + 1) + x // grid-vertex id
+
+  // Directed boundary edges as a per-vertex adjacency list. A vertex may have
+  // two outgoing edges transiently (pinch points), so a list — not a single
+  // successor — is required; shared internal edges cancel against their reverse.
+  const adj = new Map<number, number[]>()
+  const removeOne = (a: number, b: number): boolean => {
+    const list = adj.get(a)
+    if (!list) return false
+    const i = list.indexOf(b)
+    if (i < 0) return false
+    list.splice(i, 1)
+    return true
+  }
+  const addEdge = (ax: number, ay: number, bx: number, by: number): void => {
+    const a = vid(ax, ay),
+      b = vid(bx, by)
+    if (removeOne(b, a)) return // cancel the shared internal edge
+    let list = adj.get(a)
+    if (!list) adj.set(a, (list = []))
+    list.push(b)
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!bits[y * w + x]) continue
+      // CCW in a y-down grid: A(x,y) → B(x,y+1) → C(x+1,y+1) → D(x+1,y) → A
+      addEdge(x, y, x, y + 1)
+      addEdge(x, y + 1, x + 1, y + 1)
+      addEdge(x + 1, y + 1, x + 1, y)
+      addEdge(x + 1, y, x, y)
+    }
+  }
+
+  const px = (id: number): [number, number] => [id % (w + 1), Math.floor(id / (w + 1))]
+  const contours: Contour[] = []
+  for (const start of adj.keys()) {
+    while ((adj.get(start)?.length ?? 0) > 0) {
+      const loop: [number, number][] = []
+      let cur = start
+      while (true) {
+        const list = adj.get(cur)
+        if (!list || list.length === 0) break
+        const next = list.pop() as number
+        loop.push(px(cur))
+        cur = next
+        if (cur === start) break
+      }
+      if (loop.length >= 3) contours.push(normalizeRing(mergeCollinear(loop), w, h))
+    }
+  }
+  return contours
 }
 
-/** Flag artwork whose thinnest traced feature is below the nozzle limit. */
-export function tooFineForNozzle(_contours: Contour[], _minFeatureMm = 0.4): boolean {
-  throw new Error('tooFineForNozzle: not implemented yet (needs contour tracing first).')
+/** Drop middle points of any collinear run (incl. wrap-around). */
+function mergeCollinear(pts: [number, number][]): [number, number][] {
+  const n = pts.length
+  const out: [number, number][] = []
+  for (let i = 0; i < n; i++) {
+    const a = pts[(i - 1 + n) % n],
+      b = pts[i],
+      c = pts[(i + 1) % n]
+    const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    if (cross !== 0) out.push(b)
+  }
+  return out.length >= 3 ? out : pts
+}
+
+/** Grid coords → [0,1] with y flipped so the image reads upright (y up). */
+function normalizeRing(pts: [number, number][], w: number, h: number): Contour {
+  return pts.map(([x, y]) => [x / w, 1 - y / h] as Vec2)
+}
+
+/**
+ * Flag artwork whose thinnest traced feature is below the nozzle limit. Uses a
+ * conservative proxy: the shortest edge of the simplified contours, in the
+ * caller-supplied mm scale. Returns true if anything is finer than
+ * `minFeatureMm`.
+ */
+export function tooFineForNozzle(contours: Contour[], minFeatureMm = 0.4): boolean {
+  let min = Infinity
+  for (const ring of contours) {
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i],
+        b = ring[(i + 1) % ring.length]
+      min = Math.min(min, Math.hypot(b[0] - a[0], b[1] - a[1]))
+    }
+  }
+  return min < minFeatureMm
 }

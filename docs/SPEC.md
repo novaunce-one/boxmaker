@@ -194,6 +194,33 @@ and **reversed faces** (flipped/inconsistent normals).
   duplicate triangles, zero non-finite coordinates. (Watertightness and slivers
   are reported, not required — see §6 note on print-in-place templates.)
 
+### 2.14 Live preview views (`FR-PREVIEW`)
+- **FR-PREVIEW-1** The 3D view MUST offer two switchable preview modes of the
+  engraved result, both re-rendered on every edit, undo, and redo:
+  - **overlay** — the thresholded image shaded onto the picked face as a decal
+    (no geometry change); fast, for interactive editing.
+  - **cut** — the true recessed geometry from the manifold boolean (matches
+    export); recomputed debounced (~150 ms).
+- **FR-PREVIEW-2** De-etch fills (FR-DEETCH) are folded into each piece's base
+  geometry and are visible in both modes.
+
+### 2.15 De-etch / smooth a region (`FR-DEETCH`)
+For an imported box that already carries engraving:
+- **FR-DEETCH-1** The user MUST be able to pick an etched face and drag a
+  rubber-band **selection box** over an area; the screen rectangle is projected
+  onto the face plane to a (u,v) mm `Rect2`.
+- **FR-DEETCH-2** The selected area MUST be de-etched — its recesses filled back
+  flush with the surface so it becomes smooth — by a boolean **union** of a slab
+  that sits on the face plane and extends inward far enough to cap the recess.
+- **FR-DEETCH-3** De-etch MUST NOT be clipped to the coplanar face region (the
+  recess is a hole in that region); it fills over the selection directly. Only
+  the owning piece is modified, preserving the hinge. Geometry elsewhere is
+  untouched.
+- **FR-DEETCH-4** De-etch operations MUST be recorded in `ProjectState` so they
+  participate in undo/redo and the live preview.
+- **FR-DEETCH-5** Meshes MUST be oriented outward before any boolean (an
+  inward-wound import would otherwise invert unions and carve instead of fill).
+
 ### 2.13 Noise shells & hinge clearance (`FR-SHELL`, `FR-CLEAR`)
 - **FR-SHELL-1** The app MAY remove stray "noise" shells — tiny disconnected
   components that are print artifacts, not real parts. Defaults MUST be
@@ -226,6 +253,11 @@ Authoritative TypeScript lives in `src/renderer/src/core/types.ts` and
 | `MeshDiagnostics` | Validation report | `nonManifoldEdges`, `nonManifoldVertices`, `inconsistentlyOrientedEdges`, `degenerateTriangles[]`, `duplicateTriangles`, `boundaryEdges`, `unreferencedVertices`, `nanVertices`, `sliverTriangles[]`, `isWatertight`, `isManifold` |
 | `ExportResult` | Export output | `stl`, `diagnostics`, `clean`, `repaired[]`, `warnings[]` |
 | `ClearanceReport` | Min inter-piece gap | `minGap`, `betweenPieces` |
+| `Rect2` | AA rect in face (u,v) mm | `min`, `max` |
+| `SmoothWork` | De-etch regions on a face | `face`, `rects: Rect2[]` |
+| `PreviewMode` | Which preview is shown | `'overlay' \| 'cut'` |
+
+`ProjectState` now also carries `smoothed: SmoothWork[]` (the de-etch operations).
 
 Constants (normative defaults): `DEFAULT_CUT` (threshold 128, invert false,
 depth 0.6, smoothing 0.1), `DEFAULT_MARGIN_MM = 2`, `MIN_WALL_MM = 0.8`,
@@ -312,7 +344,10 @@ Traceable to the FR IDs; Vitest targets `core/`.
 | Export reports what it repaired; holes warned not blocked | `FR-REPAIR-3/4`, `WARN-HOLES` ✅ implemented |
 | Merge pieces offsets indices; STL re-parses | `FR-EXP-1/3` ✅ implemented |
 | Flood-fill isolates one face on the real template | `FR-FACE-1/2` — pending STL |
-| Marching-squares trace of a known mask → expected contour count | `FR-IMG-3/4` — pending |
+| Marching-squares trace of a block / block-with-hole → 1 / 2 rings | `FR-IMG-3/4` ✅ implemented |
+| engraveFace debosses a cube: volume drops, stays watertight | `FR-ENG-1..4` ✅ implemented (synthetic) |
+| smoothRegion refills an etched notch flush (volume restored) | `FR-DEETCH-2/3/5` ✅ implemented (synthetic) |
+| Preview re-renders on undo/redo in both overlay and cut modes | `FR-PREVIEW-1/2` ✅ implemented |
 | Cut on real template leaves other pieces unchanged | `FR-HINGE-1`, `FR-ENG-4` — pending STL |
 | Depth guard caps at 0.8 mm wall; warns | `FR-HINGE-3`, `WARN-DEPTH` — pending |
 | Break-through check flags a through-cut | `FR-HINGE-4`, `WARN-BREAKTHROUGH` — pending |

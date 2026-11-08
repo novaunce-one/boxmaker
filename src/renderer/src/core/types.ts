@@ -95,10 +95,25 @@ export const DEFAULT_MARGIN_MM = 2
 /** Minimum material left behind by any cut, in mm (wall-thickness guard). */
 export const MIN_WALL_MM = 0.8
 
+/** An axis-aligned rectangle in a face's (u,v) mm coordinates. */
+export interface Rect2 {
+  min: Vec2
+  max: Vec2
+}
+
 /** One face together with the images placed on it. */
 export interface FaceWork {
   face: FacePlane
   placements: Placement[]
+}
+
+/**
+ * A "de-etch" operation: regions of an (already etched) face to fill back flush
+ * with the surface, making them smooth again. See `smoothRegion` in engrave.ts.
+ */
+export interface SmoothWork {
+  face: FacePlane
+  rects: Rect2[]
 }
 
 /**
@@ -108,8 +123,41 @@ export interface FaceWork {
  */
 export interface ProjectState {
   faces: FaceWork[]
+  /** Regions to de-etch (fill smooth) on the imported box. */
+  smoothed: SmoothWork[]
   /** Project-wide edge margin in mm. */
   marginMm: number
 }
 
-export const EMPTY_PROJECT: ProjectState = { faces: [], marginMm: DEFAULT_MARGIN_MM }
+export const EMPTY_PROJECT: ProjectState = { faces: [], smoothed: [], marginMm: DEFAULT_MARGIN_MM }
+
+/** Which preview the 3D view shows (SPEC §2 FR-VIEW). */
+export type PreviewMode = 'overlay' | 'cut'
+
+/**
+ * Clone a project snapshot for the undo history: transforms and cut settings
+ * are duplicated, but decoded images are shared by reference (they are
+ * immutable), keeping snapshots cheap.
+ */
+export function cloneProjectState(s: ProjectState): ProjectState {
+  return {
+    marginMm: s.marginMm,
+    faces: s.faces.map((fw) => ({
+      face: fw.face,
+      placements: fw.placements.map((p) => ({
+        center: [p.center[0], p.center[1]] as Vec2,
+        size: [p.size[0], p.size[1]] as Vec2,
+        rotation: p.rotation,
+        image: p.image,
+        cut: { ...p.cut }
+      }))
+    })),
+    smoothed: s.smoothed.map((sw) => ({
+      face: sw.face,
+      rects: sw.rects.map((r) => ({
+        min: [r.min[0], r.min[1]] as Vec2,
+        max: [r.max[0], r.max[1]] as Vec2
+      }))
+    }))
+  }
+}

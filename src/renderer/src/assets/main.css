@@ -83,3 +83,22 @@ button:disabled {
 .row button {
   flex: 1;
 }
+
+.label {
+  margin: 14px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+button.active {
+  outline: 2px solid #fff;
+}
+
+.selection-box {
+  position: absolute;
+  border: 1px dashed #4f8cff;
+  background: rgba(79, 140, 255, 0.15);
+  pointer-events: none;
+}

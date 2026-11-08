@@ -4,8 +4,13 @@ An app that engraves (debosses) user images into the faces of a fixed print-in-p
 hinged jewelry-box STL and exports a printable STL. Ships first as a single-page browser
 app, then as an Electron desktop app for Mac + Windows.
 
-**Status: electron-vite scaffold in place; core geometry/image modules are typed stubs
-(some implemented, some `throw "not implemented"` with `TODO(stageN-stepM)` markers).**
+**Status: Stage 1 substantially built.** The engraving pipeline (image → marching-squares
+contours → manifold boolean cut), face picking, two live preview views (overlay + real cut)
+with undo/redo, a select-box **de-etch** (smooth an imported box's etched area), and
+export-time validation/repair are all implemented and unit-tested. Remaining stubs: the full
+2D placement editor (drag/resize/rotate handles), the wall-thickness raycast guard, and the
+browser `.zip` / IndexedDB paths. Verification against the real template is blocked on the
+template STL + sample images (SPEC §8 OQ-1/OQ-2).
 
 The full plan — goals, decisions, cutting pipeline, hinge safeguards, tech stack, and
 build order — lives in [docs/PLAN.md](docs/PLAN.md). The normative, testable
@@ -49,16 +54,25 @@ out/                   build output (gitignored)
 Path aliases: `@core`, `@ui`, `@shared`, `@renderer` (see electron.vite.config.ts /
 tsconfig.web.json / vitest.config.ts).
 
-`core/` is implemented for STL I/O, vertex welding, connected-component splitting (the hinge
-safeguard), noise-shell removal + inter-piece clearance (`components.ts`, `clearance.ts`),
-the face coordinate basis, image thresholding, undo/redo history (`history.ts`), and
-export-time mesh validation + repair (`validate.ts`, `repair.ts`, `export.ts`). The repair
-step guarantees the exported STL has **no non-manifold edges/vertices, no reversed faces,
-no degenerate/duplicate triangles, and no non-finite coordinates** (the defects an external
-repair tool would fix); it preserves geometry and never fills holes (which could fuse the
-hinge). Holes, slivers, and tight clearances are reported as non-blocking warnings.
-Marching-squares tracing, the manifold cut pipeline, and the UI interactions are stubbed
-with `TODO(stageN-stepM)` markers matching PLAN.md §8.
+`core/` (UI-free, the Vitest target): STL I/O, vertex welding, connected-component splitting
+(hinge safeguard), noise-shell removal + inter-piece clearance (`components.ts`,
+`clearance.ts`), the face coordinate basis + flood-fill `detectFace` (`faces.ts`), image
+threshold + marching-squares `traceContours` (`image-trace.ts`), the manifold cut pipeline
+`engraveFace` and the de-etch `smoothRegion` (`engrave.ts`), undo/redo history
+(`history.ts`), and export-time validation + repair (`validate.ts`, `repair.ts`,
+`export.ts`).
+
+`ui/`: `viewer.ts` (Three.js, OrbitControls, raycast face picking, overlay/cut preview,
+rubber-band de-etch selection), `preview-overlay.ts` (decal builder), `controls.ts`,
+`placement-editor.ts`. `main.ts` wires model load (Electron bridge or browser file picker),
+picking → placement/de-etch → `history.push`, and preview re-render on every state change.
+
+Geometry invariants worth knowing: all booleans go through `toManifold`, which repairs +
+**orients meshes outward first** (an inward-wound import otherwise inverts unions — a de-etch
+would carve instead of fill). De-etch fills over the selection rect directly and is NOT
+clipped to the coplanar face region (the recess is a hole in it). Repair guarantees exports
+have no non-manifold edges/vertices, reversed faces, degenerate/duplicate triangles, or
+non-finite coords; holes/slivers/tight-clearances are non-blocking warnings.
 
 ## Still needed from the user before coding
 - The template STL, sample images, confirmed default cut depth/margin, and whether the lid

@@ -166,6 +166,9 @@ button.active {
   stroke: #9aa0a6;
   stroke-width: 1;
   cursor: move;
+  /* `fill: none` would otherwise make only the 1px outline grabbable; `all`
+     hit-tests the whole interior so the image can be dragged from anywhere. */
+  pointer-events: all;
 }
 
 .editor-box.sel {

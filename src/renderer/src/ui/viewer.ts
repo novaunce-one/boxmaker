@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { detectFace, findSeedTriangle } from '@core/faces'
+import { detectFace, findSeedTriangle, rebindFace } from '@core/faces'
 import { engraveFace, smoothRegion } from '@core/engrave'
 import type { FacePlane, IndexedMesh, MeshPiece, PreviewMode, ProjectState, Rect2 } from '@core/types'
 import { buildOverlayGroup } from './preview-overlay'
@@ -158,8 +158,24 @@ export class Viewer {
     }
     const face = detectFace(entry.original, seed, pieceId)
     this.pickedFace = face
-    this.highlightFace(entry.original, face)
+    this.refreshHighlight()
     this.onPickFace(face)
+  }
+
+  /**
+   * Draw the picked face's highlight on the mesh as currently shown. A face is
+   * detected on the original piece, where an etching is a hole in the coplanar
+   * region — so highlighting that directly would keep outlining the etching
+   * even after it was de-etched. Re-derive the face on the de-etched base mesh
+   * (the fill makes the region contiguous again) and highlight that instead.
+   */
+  private refreshHighlight(): void {
+    const face = this.pickedFace
+    if (!face) return
+    const entry = this.pieces.get(face.pieceId)
+    if (!entry) return
+    const shown = entry.base === entry.original ? face : rebindFace(entry.base, face)
+    this.highlightFace(entry.base, shown)
   }
 
   /** Deselect the picked face: drop the highlight and notify the app. */
@@ -281,6 +297,7 @@ export class Viewer {
       entry.object.geometry.dispose()
       entry.object.geometry = toGeometry(piece.mesh)
     }
+    this.refreshHighlight() // follow de-etch fills / undo / redo
   }
 
   private scheduleCut(state: ProjectState): void {

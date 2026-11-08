@@ -178,6 +178,7 @@ export class PlacementEditor {
     img.setAttribute('height', String(h))
     img.setAttribute('href', maskDataUrl(pl))
     img.setAttribute('preserveAspectRatio', 'none')
+    img.dataset.role = 'body' // dragging the picture itself moves it
     g.appendChild(img)
 
     const frame = rect(-w / 2, -h / 2, w, h, index === this.selected ? 'editor-box sel' : 'editor-box')
@@ -366,8 +367,28 @@ function faceBBox(mesh: IndexedMesh, face: FacePlane): Rect2 {
   return { min: [minU, minV], max: [maxU, maxV] }
 }
 
+/**
+ * Mask data URLs keyed by image identity + threshold/invert. The editor
+ * re-renders on every pointer move while dragging; without this each frame would
+ * re-threshold and re-encode the whole image.
+ */
+const maskCache = new WeakMap<ImageSource, Map<string, string>>()
+
 /** The thresholded mask of a placement as a data URL for the live preview. */
 function maskDataUrl(pl: Placement): string {
+  const key = `${pl.cut.threshold}|${pl.cut.invert}`
+  let perImage = maskCache.get(pl.image)
+  if (!perImage) maskCache.set(pl.image, (perImage = new Map()))
+  let url = perImage.get(key)
+  if (url === undefined) {
+    url = renderMaskDataUrl(pl)
+    if (perImage.size >= 8) perImage.clear() // bound memory while a slider is scrubbed
+    perImage.set(key, url)
+  }
+  return url
+}
+
+function renderMaskDataUrl(pl: Placement): string {
   const mask = toBinaryMask(pl.image, pl.cut)
   const img = maskToRgba(mask, [20, 20, 20], 235)
   const canvas = document.createElement('canvas')

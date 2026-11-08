@@ -143,6 +143,27 @@ describe('face re-binding after de-etch', () => {
     expect(componentVolume(piece.mesh)).toBeLessThan(componentVolume(smoothed.mesh))
   })
 
+  it('a de-etched face is whole again: no hole where the etching was', () => {
+    const area = (mesh: MeshPiece['mesh'], tris: number[]): number => {
+      let sum = 0
+      for (const t of tris) {
+        const p = [0, 1, 2].map((k) => mesh.indices[t * 3 + k] * 3)
+        const [ax, ay] = [mesh.vertices[p[0]], mesh.vertices[p[0] + 1]]
+        const [bx, by] = [mesh.vertices[p[1]], mesh.vertices[p[1] + 1]]
+        const [cx, cy] = [mesh.vertices[p[2]], mesh.vertices[p[2] + 1]]
+        sum += Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2
+      }
+      return sum
+    }
+    const etched = engraveFace(unitCube(20), topFace(), [centeredPlacement(10, 10, 1)], 2).piece
+    const holed = rebindFace(etched.mesh, topFace()) // etching is a hole in the top face
+    expect(area(etched.mesh, holed.triangles)).toBeLessThan(400 - 90)
+
+    const smoothed = smoothRegion(etched, topFace(), [{ min: [-6, -6], max: [6, 6] }], 2).piece
+    const whole = rebindFace(smoothed.mesh, topFace())
+    expect(area(smoothed.mesh, whole.triangles)).toBeCloseTo(400, 0) // full 20×20 top
+  })
+
   it('maps a point on a face back to a triangle on that face', () => {
     const cube = unitCube(20)
     const seed = findSeedTriangle(cube.mesh, [0, 0, 1], [5, 5, 20])

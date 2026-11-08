@@ -3,7 +3,7 @@ import { toBinaryMask, traceContours } from './image-trace'
 import { componentVolume } from './components'
 import { validateMesh } from './validate'
 import { repairMesh } from './repair'
-import type { FacePlane, IndexedMesh, MeshPiece, Placement, Rect2, Vec2, Vec3 } from './types'
+import { MIN_WALL_MM, type FacePlane, type IndexedMesh, type MeshPiece, type Placement, type ProjectState, type Rect2, type Vec2, type Vec3 } from './types'
 
 /**
  * The cut pipeline (docs/PLAN.md §4–5, SPEC §2.8). Traces each placed image to
@@ -51,7 +51,21 @@ export function engraveFace(
       warnings.push('A placement is entirely outside the face margin and was skipped.')
       continue
     }
-    const cutter = extrudeInward(art, pl.cut.depth + START_EPS, face, START_EPS)
+    // Wall-thickness guard (FR-HINGE-3): cap depth so ≥ MIN_WALL_MM remains.
+    let depth = pl.cut.depth
+    const wall = wallThickness(piece.mesh, face, pl)
+    if (Number.isFinite(wall) && depth > wall - MIN_WALL_MM) {
+      depth = Math.max(0, wall - MIN_WALL_MM)
+      warnings.push(
+        `A cut ${pl.cut.depth.toFixed(2)} mm deep would leave < ${MIN_WALL_MM} mm of wall; ` +
+          `capped to ${depth.toFixed(2)} mm (WARN-DEPTH).`
+      )
+    }
+    if (depth <= 0) {
+      warnings.push('A placement was skipped: the wall is too thin to cut (WARN-DEPTH).')
+      continue
+    }
+    const cutter = extrudeInward(art, depth + START_EPS, face, START_EPS)
     solid = solid.subtract(cutter)
   }
 
@@ -90,6 +104,38 @@ export function smoothRegion(
 }
 
 /**
+ * Assemble the engraved model from a `ProjectState` (SPEC §2.8/§2.9). For each
+ * piece, de-etch fills are unioned first, then every placed image is subtracted;
+ * pieces with no work pass through byte-identical, preserving the print-in-place
+ * hinge (FR-HINGE-1). This is the single source of truth shared by export and
+ * (optionally) the cut preview.
+ */
+export function applyProject(
+  pieces: MeshPiece[],
+  state: ProjectState
+): { pieces: MeshPiece[]; warnings: string[] } {
+  const warnings: string[] = []
+  const out = pieces.map((piece) => {
+    let work = piece
+    const fillDepth = Math.max(2, state.marginMm)
+    for (const sw of state.smoothed) {
+      if (sw.face.pieceId !== piece.id || sw.rects.length === 0) continue
+      const r = smoothRegion(work, sw.face, sw.rects, fillDepth)
+      work = r.piece
+      warnings.push(...r.warnings)
+    }
+    for (const fw of state.faces) {
+      if (fw.face.pieceId !== piece.id || fw.placements.length === 0) continue
+      const r = engraveFace(work, fw.face, fw.placements, state.marginMm)
+      work = r.piece
+      warnings.push(...r.warnings)
+    }
+    return work
+  })
+  return { pieces: out, warnings }
+}
+
+/**
  * Pre-export break-through check (SPEC §2.6 FR-HINGE-4): a cut that pierces a
  * wall leaves the piece non-watertight. (A tunnel that stays watertight is not
  * caught here — a raycast depth re-check is the follow-up, tracked in the plan.)
@@ -106,7 +152,91 @@ export function checkBreakthrough(before: MeshPiece, after: MeshPiece): string[]
   return warnings
 }
 
+/**
+ * Smallest front-wall thickness under a placement's artwork (SPEC §2.6
+ * FR-HINGE-3). Casts rays inward (−normal) from an `samples`×`samples` grid over
+ * the placement rectangle; for each ray that enters the solid, the wall is the
+ * gap between the first two surfaces hit. Sample points whose ray finds fewer
+ * than two surfaces (outside the solid footprint) are ignored. Returns
+ * `Infinity` when nothing measurable is under the artwork (nothing to cap
+ * against), so the caller leaves the requested depth unchanged.
+ */
+export function wallThickness(mesh: IndexedMesh, face: FacePlane, pl: Placement, samples = 5): number {
+  const cos = Math.cos(pl.rotation)
+  const sin = Math.sin(pl.rotation)
+  const n = face.normal
+  let min = Infinity
+  for (let iy = 0; iy < samples; iy++) {
+    for (let ix = 0; ix < samples; ix++) {
+      // Grid point in the placement rect (face-local mm), honoring rotation.
+      const lx = (ix / (samples - 1) - 0.5) * pl.size[0]
+      const ly = (iy / (samples - 1) - 0.5) * pl.size[1]
+      const uu = pl.center[0] + lx * cos - ly * sin
+      const vv = pl.center[1] + lx * sin + ly * cos
+      // World point on the face, nudged just outside; cast inward along −n.
+      const ox = face.origin[0] + face.u[0] * uu + face.v[0] * vv + n[0] * START_EPS
+      const oy = face.origin[1] + face.u[1] * uu + face.v[1] * vv + n[1] * START_EPS
+      const oz = face.origin[2] + face.u[2] * uu + face.v[2] * vv + n[2] * START_EPS
+      const hits = rayHits(mesh, ox, oy, oz, -n[0], -n[1], -n[2])
+      if (hits.length >= 2) min = Math.min(min, hits[1] - hits[0])
+    }
+  }
+  return min
+}
+
 // --- helpers -------------------------------------------------------------
+
+/**
+ * Sorted forward (t > 0) surface crossings of a ray through the mesh. Hits
+ * within `WELD_T` of each other are one surface — a ray grazing the shared edge
+ * of two coplanar triangles (e.g. a quad's diagonal) otherwise counts twice and
+ * would collapse the measured wall to zero.
+ */
+function rayHits(mesh: IndexedMesh, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): number[] {
+  const { vertices: p, indices: idx } = mesh
+  const ts: number[] = []
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3,
+      b = idx[t + 1] * 3,
+      c = idx[t + 2] * 3
+    const hit = rayTriangle(ox, oy, oz, dx, dy, dz, p[a], p[a + 1], p[a + 2], p[b], p[b + 1], p[b + 2], p[c], p[c + 1], p[c + 2])
+    if (hit !== null) ts.push(hit)
+  }
+  ts.sort((m, n) => m - n)
+  const WELD_T = 1e-4
+  const out: number[] = []
+  for (const t of ts) if (out.length === 0 || t - out[out.length - 1] > WELD_T) out.push(t)
+  return out
+}
+
+/** Möller–Trumbore ray/triangle intersection; returns t > ε or null. */
+function rayTriangle(
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  ax: number, ay: number, az: number,
+  bx: number, by: number, bz: number,
+  cx: number, cy: number, cz: number
+): number | null {
+  const EPS = 1e-7
+  const e1x = bx - ax, e1y = by - ay, e1z = bz - az
+  const e2x = cx - ax, e2y = cy - ay, e2z = cz - az
+  const px = dy * e2z - dz * e2y
+  const py = dz * e2x - dx * e2z
+  const pz = dx * e2y - dy * e2x
+  const det = e1x * px + e1y * py + e1z * pz
+  if (det > -EPS && det < EPS) return null // ray parallel to triangle
+  const inv = 1 / det
+  const tx = ox - ax, ty = oy - ay, tz = oz - az
+  const u = (tx * px + ty * py + tz * pz) * inv
+  if (u < 0 || u > 1) return null
+  const qx = ty * e1z - tz * e1y
+  const qy = tz * e1x - tx * e1z
+  const qz = tx * e1y - ty * e1x
+  const v = (dx * qx + dy * qy + dz * qz) * inv
+  if (v < 0 || u + v > 1) return null
+  const t = (e2x * qx + e2y * qy + e2z * qz) * inv
+  return t > EPS ? t : null
+}
 
 /**
  * Build a manifold solid from an indexed mesh. The mesh is repaired first so it

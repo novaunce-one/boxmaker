@@ -4,13 +4,16 @@ An app that engraves (debosses) user images into the faces of a fixed print-in-p
 hinged jewelry-box STL and exports a printable STL. Ships first as a single-page browser
 app, then as an Electron desktop app for Mac + Windows.
 
-**Status: Stage 1 substantially built.** The engraving pipeline (image → marching-squares
-contours → manifold boolean cut), face picking, two live preview views (overlay + real cut)
-with undo/redo, a select-box **de-etch** (smooth an imported box's etched area), and
-export-time validation/repair are all implemented and unit-tested. Remaining stubs: the full
-2D placement editor (drag/resize/rotate handles), the wall-thickness raycast guard, and the
-browser `.zip` / IndexedDB paths. Verification against the real template is blocked on the
-template STL + sample images (SPEC §8 OQ-1/OQ-2).
+**Status: Stage 1 feature-complete (pending real-template verification).** The engraving
+pipeline (image → marching-squares contours → manifold boolean cut), face picking, two live
+preview views (overlay + real cut) with undo/redo, a select-box **de-etch** (smooth an
+imported box's etched area), the wall-thickness raycast depth guard (WARN-DEPTH), the full 2D
+placement editor (drag / aspect-locked resize / rotate + numeric mm·° entry + per-placement
+cut controls + margin clamp), export wiring (assemble → repair → validate → save), and the
+browser `.stl`-in-`.zip` + IndexedDB template-persistence paths are all implemented; `core/`
+is unit-tested (44 tests). Verification against the real template is still blocked on the
+template STL + sample images (SPEC §8 OQ-1/OQ-2); the only deferred stub is the FR-HINGE-4
+raycast depth re-check (the watertight-based break-through check is already in place).
 
 The full plan — goals, decisions, cutting pipeline, hinge safeguards, tech stack, and
 build order — lives in [docs/PLAN.md](docs/PLAN.md). The normative, testable
@@ -58,14 +61,20 @@ tsconfig.web.json / vitest.config.ts).
 (hinge safeguard), noise-shell removal + inter-piece clearance (`components.ts`,
 `clearance.ts`), the face coordinate basis + flood-fill `detectFace` (`faces.ts`), image
 threshold + marching-squares `traceContours` (`image-trace.ts`), the manifold cut pipeline
-`engraveFace` and the de-etch `smoothRegion` (`engrave.ts`), undo/redo history
-(`history.ts`), and export-time validation + repair (`validate.ts`, `repair.ts`,
-`export.ts`).
+`engraveFace`, the de-etch `smoothRegion`, the whole-model `applyProject`, and the
+wall-thickness raycast `wallThickness` (`engrave.ts`), undo/redo history (`history.ts`),
+export-time validation + repair (`validate.ts`, `repair.ts`, `export.ts`), and the
+dependency-free STORED `.zip` writer + CRC-32 (`zip.ts`).
 
 `ui/`: `viewer.ts` (Three.js, OrbitControls, raycast face picking, overlay/cut preview,
-rubber-band de-etch selection), `preview-overlay.ts` (decal builder), `controls.ts`,
-`placement-editor.ts`. `main.ts` wires model load (Electron bridge or browser file picker),
-picking → placement/de-etch → `history.push`, and preview re-render on every state change.
+rubber-band de-etch selection), `preview-overlay.ts` (decal builder), `controls.ts` (load /
+preview toggle / add-image / de-etch / undo-redo / export), `placement-editor.ts` (SVG
+drag/aspect-resize/rotate handles + numeric mm·° and cut-setting fields, margin-clamp). The
+browser I/O shim `web-io.ts` (NOT in `ui/`; lives in `src/renderer/src/`) does file-open,
+`.zip` download, and IndexedDB template persistence — the web counterpart to `BoxmakerApi`.
+`main.ts` wires model load (Electron bridge or browser picker + IndexedDB restore), picking →
+editor open → `history.push`, de-etch, export (`applyProject` → `prepareForExport` → save),
+and preview re-render on every state change.
 
 Geometry invariants worth knowing: all booleans go through `toManifold`, which repairs +
 **orients meshes outward first** (an inward-wound import otherwise inverts unions — a de-etch

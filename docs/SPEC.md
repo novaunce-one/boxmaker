@@ -343,13 +343,16 @@ Traceable to the FR IDs; Vitest targets `core/`.
 | Inter-piece gap measured; tight joint warned | `FR-CLEAR-1`, `WARN-CLEARANCE` ✅ implemented |
 | Export reports what it repaired; holes warned not blocked | `FR-REPAIR-3/4`, `WARN-HOLES` ✅ implemented |
 | Merge pieces offsets indices; STL re-parses | `FR-EXP-1/3` ✅ implemented |
+| Browser `.zip` wraps the `.stl` (valid STORED archive + CRC-32) | `FR-EXP-2` ✅ implemented |
+| 2D editor: drag/resize(aspect)/rotate + numeric mm·° + margin clamp | `FR-EDIT-1..5`, `FR-CUT-1/2` ✅ implemented (UI) |
 | Flood-fill isolates one face on the real template | `FR-FACE-1/2` — pending STL |
 | Marching-squares trace of a block / block-with-hole → 1 / 2 rings | `FR-IMG-3/4` ✅ implemented |
 | engraveFace debosses a cube: volume drops, stays watertight | `FR-ENG-1..4` ✅ implemented (synthetic) |
 | smoothRegion refills an etched notch flush (volume restored) | `FR-DEETCH-2/3/5` ✅ implemented (synthetic) |
 | Preview re-renders on undo/redo in both overlay and cut modes | `FR-PREVIEW-1/2` ✅ implemented |
 | Cut on real template leaves other pieces unchanged | `FR-HINGE-1`, `FR-ENG-4` — pending STL |
-| Depth guard caps at 0.8 mm wall; warns | `FR-HINGE-3`, `WARN-DEPTH` — pending |
+| Depth guard caps at 0.8 mm wall; warns | `FR-HINGE-3`, `WARN-DEPTH` ✅ implemented (synthetic) |
+| Last template restored from IndexedDB on next launch | `FR-LOAD-2` ✅ implemented (browser) |
 | Break-through check flags a through-cut | `FR-HINGE-4`, `WARN-BREAKTHROUGH` — pending |
 | End-to-end: load → place sample logo → cut → export valid STL | Stage 1 exit — pending STL + sample |
 

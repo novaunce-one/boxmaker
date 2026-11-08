@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { traceContours, tooFineForNozzle } from './image-trace'
 import { maskToRgba } from '../ui/preview-overlay'
-import { engraveFace, smoothRegion } from './engrave'
+import { engraveFace, smoothRegion, wallThickness } from './engrave'
 import { componentVolume } from './components'
 import { initManifold } from './manifold'
 import type { BinaryMask } from './image-trace'
@@ -114,7 +114,44 @@ describe('smoothRegion (de-etch)', () => {
   })
 })
 
+describe('wall-thickness guard (FR-HINGE-3)', () => {
+  beforeAll(async () => {
+    await initManifold()
+  })
+
+  it('measures the front-wall thickness under a placement', () => {
+    const slab = box(20, 20, 1) // 1 mm thick in Z
+    const t = wallThickness(slab.mesh, slabTopFace(1), centeredPlacement(10, 10))
+    expect(t).toBeGreaterThan(0.9)
+    expect(t).toBeLessThan(1.1)
+  })
+
+  it('caps a too-deep cut and warns, leaving the slab watertight', () => {
+    const slab = box(20, 20, 1)
+    // Request 0.6 mm into a 1 mm wall → would leave 0.4 mm (< 0.8). Must cap.
+    const { piece, warnings } = engraveFace(slab, slabTopFace(1), [centeredPlacement(10, 10, 0.6)], 2)
+    expect(warnings.some((w) => w.includes('WARN-DEPTH'))).toBe(true)
+    expect(componentVolume(piece.mesh)).toBeGreaterThan(0)
+  })
+
+  it('leaves a thick wall uncut-capped (no warning)', () => {
+    const cube = box(20, 20, 20)
+    const { warnings } = engraveFace(cube, slabTopFace(20), [centeredPlacement(10, 10, 0.6)], 2)
+    expect(warnings).toHaveLength(0)
+  })
+})
+
 // --- fixtures ------------------------------------------------------------
+
+function centeredPlacement(w: number, h: number, depth = 1): import('./types').Placement {
+  return {
+    center: [0, 0],
+    size: [w, h],
+    rotation: 0,
+    image: solidBlackImage(16, 16),
+    cut: { threshold: 128, invert: false, depth, smoothing: 0.1 }
+  }
+}
 
 function solidBlackImage(w: number, h: number): ImageSource {
   const rgba = new Uint8ClampedArray(w * h * 4)
@@ -136,10 +173,19 @@ function topFace(): FacePlane {
 
 /** An axis-aligned cube [0,size]³ as a watertight indexed MeshPiece. */
 function unitCube(size: number): MeshPiece {
-  const s = size
+  return box(size, size, size)
+}
+
+/** The +Z top face (origin centered) of a box whose top sits at z = sz. */
+function slabTopFace(sz: number): FacePlane {
+  return { origin: [10, 10, sz], normal: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0], triangles: [2, 3], pieceId: 0 }
+}
+
+/** An axis-aligned box [0,sx]×[0,sy]×[0,sz] as a watertight indexed MeshPiece. */
+function box(sx: number, sy: number, sz: number): MeshPiece {
   const v = [
-    0, 0, 0, s, 0, 0, s, s, 0, 0, s, 0, // bottom z=0
-    0, 0, s, s, 0, s, s, s, s, 0, s, s // top z=s
+    0, 0, 0, sx, 0, 0, sx, sy, 0, 0, sy, 0, // bottom z=0
+    0, 0, sz, sx, 0, sz, sx, sy, sz, 0, sy, sz // top z=sz
   ]
   const quads = [
     [0, 1, 2, 3], // bottom (−Z)

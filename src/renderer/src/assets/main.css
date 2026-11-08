@@ -102,3 +102,142 @@ button.active {
   background: rgba(79, 140, 255, 0.15);
   pointer-events: none;
 }
+
+/* 2D placement editor — floating panel over the viewport (SPEC §2.4). */
+#editor {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 340px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid #000;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+#editor[hidden] {
+  display: none;
+}
+
+.editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.editor-head button {
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.editor-svg {
+  display: block;
+  margin: 0 auto 8px;
+  background: #15161a;
+  border-radius: 4px;
+  touch-action: none;
+}
+
+.editor-face {
+  fill: rgba(185, 192, 199, 0.12);
+  stroke: #666;
+  stroke-width: 1;
+}
+
+.editor-inset {
+  fill: none;
+  stroke: #4f8cff;
+  stroke-dasharray: 4 3;
+  stroke-width: 1;
+  opacity: 0.6;
+}
+
+.editor-box {
+  fill: none;
+  stroke: #9aa0a6;
+  stroke-width: 1;
+  cursor: move;
+}
+
+.editor-box.sel {
+  stroke: #4f8cff;
+  stroke-width: 1.5;
+}
+
+.editor-handle {
+  fill: #4f8cff;
+  stroke: #fff;
+  stroke-width: 1;
+  cursor: nwse-resize;
+}
+
+.editor-rot {
+  fill: #ffcc44;
+  stroke: #fff;
+  stroke-width: 1;
+  cursor: grab;
+}
+
+.editor-list {
+  margin-bottom: 8px;
+}
+
+.editor-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+.editor-row.sel {
+  background: rgba(79, 140, 255, 0.15);
+}
+
+.editor-row span {
+  cursor: pointer;
+}
+
+.editor-row button {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.editor-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.editor-field {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  color: var(--muted);
+  gap: 2px;
+}
+
+.editor-field.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.editor-field input[type='number'] {
+  font: inherit;
+  color: var(--text);
+  background: #15161a;
+  border: 1px solid #000;
+  border-radius: 4px;
+  padding: 4px;
+  width: 100%;
+}

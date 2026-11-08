@@ -11,6 +11,7 @@ export interface ControlsCallbacks {
   onDeEtchModeChange: (on: boolean) => void
   onUndo: () => void
   onRedo: () => void
+  onExport: () => void | Promise<void>
 }
 
 export class Controls {
@@ -20,6 +21,7 @@ export class Controls {
   private overlayBtn!: HTMLButtonElement
   private cutBtn!: HTMLButtonElement
   private deEtchBtn!: HTMLButtonElement
+  private exportBtn!: HTMLButtonElement
   private deEtchOn = false
 
   constructor(
@@ -60,6 +62,9 @@ export class Controls {
     this.redoBtn = this.makeButton('Redo', this.cb.onRedo)
     historyRow.append(this.undoBtn, this.redoBtn)
 
+    // Export: assemble, repair, validate, and save (.stl desktop / .zip web).
+    this.exportBtn = this.makeButton('Export STL…', () => void this.cb.onExport())
+
     this.root.replaceChildren(
       loadBtn,
       label('Preview'),
@@ -68,11 +73,19 @@ export class Controls {
       this.addBtn,
       this.deEtchBtn,
       historyRow,
+      label('Export'),
+      this.exportBtn,
       fileInput
     )
     this.selectMode('overlay')
     this.setFacePicked(false)
     this.setHistoryState(false, false)
+    this.setModelLoaded(false)
+  }
+
+  /** Export is only meaningful once a model is loaded. */
+  setModelLoaded(loaded: boolean): void {
+    this.exportBtn.disabled = !loaded
   }
 
   /** Enable image placement / de-etch only once a face is selected. */

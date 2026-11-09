@@ -4,7 +4,7 @@ import { componentVolume } from './components'
 import { rebindFace } from './faces'
 import { validateMesh } from './validate'
 import { repairMesh } from './repair'
-import { MIN_WALL_MM, type FacePlane, type IndexedMesh, type MeshPiece, type Placement, type ProjectState, type Rect2, type Vec2, type Vec3 } from './types'
+import { EMBOSS_FUSE_MM, MAX_EMBOSS_MM, MIN_CLEARANCE_MM, MIN_WALL_MM, type FacePlane, type IndexedMesh, type MeshPiece, type Placement, type ProjectState, type Rect2, type Vec2, type Vec3 } from './types'
 
 /**
  * The cut pipeline (docs/PLAN.md §4–5, SPEC §2.8). Traces each placed image to
@@ -34,7 +34,9 @@ export function engraveFace(
   face: FacePlane,
   placements: Placement[],
   marginMm: number,
-  minWallMm = MIN_WALL_MM
+  minWallMm = MIN_WALL_MM,
+  /** Other pieces' meshes, so a raised image can be capped before it reaches them. */
+  neighbours: IndexedMesh[] = []
 ): EngraveResult {
   if (placements.length === 0) return { piece, warnings: [] }
   const { CrossSection } = manifold()
@@ -47,17 +49,26 @@ export function engraveFace(
   let solid = toManifold(piece.mesh)
   const clip = buildFaceRegion(piece.mesh, face, CrossSection).offset(-marginMm)
 
-  for (const pl of placements) {
+  /** Placement artwork in face mm, clipped to the margin; null if nothing is left. */
+  const clippedArt = (pl: Placement): import('manifold-3d').CrossSection | null => {
     const mask = toBinaryMask(pl.image, pl.cut)
     const polys = contoursToMm(traceContours(mask, pl.cut.smoothing), pl)
-    if (polys.length === 0) continue
+    if (polys.length === 0) return null
     let art = new CrossSection(polys, 'EvenOdd').simplify(pl.cut.smoothing)
     art = art.intersect(clip)
     if (art.area() <= 0) {
       warnings.push('A placement is entirely outside the face margin and was skipped.')
-      continue
+      return null
     }
-    // Wall-thickness guard (FR-HINGE-3): cap depth so ≥ MIN_WALL_MM remains.
+    return art
+  }
+
+  // Etches first, then embosses, so raised art is never cut by an etch beneath it.
+  for (const pl of placements) {
+    if (pl.cut.mode === 'emboss') continue
+    const art = clippedArt(pl)
+    if (!art) continue
+    // Wall-thickness guard (FR-HINGE-3): cap depth so ≥ minWallMm remains.
     let depth = pl.cut.depth
     const wall = wallThickness(piece.mesh, face, pl)
     if (Number.isFinite(wall) && depth > wall - minWallMm) {
@@ -73,6 +84,27 @@ export function engraveFace(
     }
     const cutter = extrudeInward(art, depth + START_EPS, face, START_EPS)
     solid = solid.subtract(cutter)
+  }
+
+  for (const pl of placements) {
+    if (pl.cut.mode !== 'emboss') continue
+    const art = clippedArt(pl)
+    if (!art) continue
+    // Free-space guard (FR-CUT-4): a raised image must stop short of anything above it.
+    let height = Math.min(pl.cut.height, MAX_EMBOSS_MM)
+    const free = freeSpace([piece.mesh, ...neighbours], face, pl)
+    if (Number.isFinite(free) && height > free - MIN_CLEARANCE_MM) {
+      height = Math.max(0, free - MIN_CLEARANCE_MM)
+      warnings.push(
+        `A raised image ${pl.cut.height.toFixed(2)} mm tall would come within ${MIN_CLEARANCE_MM} mm of ` +
+          `another surface; capped to ${height.toFixed(2)} mm (WARN-HEIGHT).`
+      )
+    }
+    if (height <= 0) {
+      warnings.push('A raised image was skipped: there is no free space above it (WARN-HEIGHT).')
+      continue
+    }
+    solid = solid.add(extrudeOutward(art, height, face, EMBOSS_FUSE_MM))
   }
 
   return { piece: { id: piece.id, mesh: fromManifold(solid) }, warnings }
@@ -137,7 +169,8 @@ export function applyProject(
     }
     for (const fw of state.faces) {
       if (fw.face.pieceId !== piece.id || fw.placements.length === 0) continue
-      const r = engraveFace(work, fw.face, fw.placements, state.marginMm, minWallMm)
+      const others = pieces.filter((p) => p.id !== piece.id).map((p) => p.mesh)
+      const r = engraveFace(work, fw.face, fw.placements, state.marginMm, minWallMm, others)
       work = r.piece
       warnings.push(...r.warnings)
     }
@@ -190,6 +223,35 @@ export function wallThickness(mesh: IndexedMesh, face: FacePlane, pl: Placement,
       const oz = face.origin[2] + face.u[2] * uu + face.v[2] * vv + n[2] * START_EPS
       const hits = rayHits(mesh, ox, oy, oz, -n[0], -n[1], -n[2])
       if (hits.length >= 2) min = Math.min(min, hits[1] - hits[0])
+    }
+  }
+  return min
+}
+
+/**
+ * Free space above a placement's artwork (SPEC §2.5 FR-CUT-4): casts rays
+ * outward (+normal) from a `samples`×`samples` grid over the placement rectangle
+ * against `meshes` (the face's own piece plus the other pieces) and returns the
+ * distance to the nearest surface hit, or `Infinity` if the way is clear.
+ */
+export function freeSpace(meshes: IndexedMesh[], face: FacePlane, pl: Placement, samples = 5): number {
+  const cos = Math.cos(pl.rotation)
+  const sin = Math.sin(pl.rotation)
+  const n = face.normal
+  let min = Infinity
+  for (let iy = 0; iy < samples; iy++) {
+    for (let ix = 0; ix < samples; ix++) {
+      const lx = (ix / (samples - 1) - 0.5) * pl.size[0]
+      const ly = (iy / (samples - 1) - 0.5) * pl.size[1]
+      const uu = pl.center[0] + lx * cos - ly * sin
+      const vv = pl.center[1] + lx * sin + ly * cos
+      const ox = face.origin[0] + face.u[0] * uu + face.v[0] * vv + n[0] * START_EPS
+      const oy = face.origin[1] + face.u[1] * uu + face.v[1] * vv + n[1] * START_EPS
+      const oz = face.origin[2] + face.u[2] * uu + face.v[2] * vv + n[2] * START_EPS
+      for (const mesh of meshes) {
+        const hits = rayHits(mesh, ox, oy, oz, n[0], n[1], n[2])
+        if (hits.length > 0) min = Math.min(min, hits[0] + START_EPS)
+      }
     }
   }
   return min
@@ -344,6 +406,21 @@ function extrudeInward(
 ): import('manifold-3d').Manifold {
   const { Manifold } = manifold()
   return Manifold.extrude(region, height).translate([0, 0, -height]).transform(faceMatrix(face, startEps))
+}
+
+/**
+ * Extrude a 2D face-local region into a solid that rises OUTWARD from the
+ * surface: z ∈ [−fuse, height] in the face frame, so it overlaps `fuse` mm into
+ * the wall (fusing with it on union) and stands `height` mm proud.
+ */
+function extrudeOutward(
+  region: import('manifold-3d').CrossSection,
+  height: number,
+  face: FacePlane,
+  fuse: number
+): import('manifold-3d').Manifold {
+  const { Manifold } = manifold()
+  return Manifold.extrude(region, height + fuse).translate([0, 0, -fuse]).transform(faceMatrix(face, 0))
 }
 
 /** Proper-rotation (det +1) face frame: local X→u, Y→v, Z→normal, +origin·startEps. */

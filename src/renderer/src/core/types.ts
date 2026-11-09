@@ -71,12 +71,19 @@ export interface ImageSource {
   rgba: Uint8ClampedArray
 }
 
+/** `etch` cuts the image into the surface; `emboss` raises it above the surface. */
+export type CutMode = 'etch' | 'emboss'
+
 export interface CutSettings {
-  /** 0–255 luminance threshold; pixels darker than this are cut. */
+  /** 0–255 luminance threshold; pixels darker than this are cut (etch) or raised (emboss). */
   threshold: number
   invert: boolean
-  /** Cut depth in mm (inward along −normal). */
+  /** Etch or emboss (default etch). */
+  mode: CutMode
+  /** Etch depth in mm (inward along −normal). Used when `mode` is `etch`. */
   depth: number
+  /** Emboss height in mm (outward along +normal). Used when `mode` is `emboss`. */
+  height: number
   /** Edge-smoothing / contour simplification tolerance in mm. */
   smoothing: number
 }
@@ -85,9 +92,17 @@ export interface CutSettings {
 export const DEFAULT_CUT: CutSettings = {
   threshold: 128,
   invert: false,
+  mode: 'etch',
   depth: 0.6,
+  height: 0.6,
   smoothing: 0.1
 }
+
+/** Tallest emboss offered, in mm. */
+export const MAX_EMBOSS_MM = 3
+
+/** How far an embossed image reaches into the wall so it fuses with the surface, in mm. */
+export const EMBOSS_FUSE_MM = 0.2
 
 /** Edge margin kept clear of every face edge (hinge/lip safety), in mm. */
 export const DEFAULT_MARGIN_MM = 2

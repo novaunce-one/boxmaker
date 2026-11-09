@@ -99,6 +99,17 @@ damaging the print-in-place hinge.
   the resulting maximum, clamp typed/slider values to it, and — if the stored
   depth exceeds the limit at the current position — state the depth that will
   actually be cut (the engraver applies the same cap, `WARN-DEPTH`).
+- **FR-CUT-4** Each placement has a **mode**: `etch` (default; cut inward by depth)
+  or `emboss` (raised outward by `height`, default 0.6 mm, max `MAX_EMBOSS_MM` =
+  3 mm). Dark pixels are cut/raised; Invert flips that. An embossed image is
+  clipped to the face margin like an etch, overlaps `EMBOSS_FUSE_MM` into the wall
+  so it fuses with the surface, and is unioned after all etches on the piece so an
+  etch never cuts raised art. The height control (slider, number, **−** / **+**
+  0.1 mm steppers, **Max**) MUST be limited to the free space above the image
+  (rays along +normal against the piece and the other pieces) minus
+  `MIN_CLEARANCE_MM`; the engraver applies the same cap and warns (`WARN-HEIGHT`),
+  and skips the image when no space remains. Overlay preview tints raised art
+  light and etched art dark. Project files without `mode`/`height` open as etch.
 
 ### 2.6 Piece splitting / hinge protection (`FR-HINGE`)
 - **FR-HINGE-1** The template MUST be split into connected components by welding

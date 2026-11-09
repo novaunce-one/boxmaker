@@ -1,9 +1,12 @@
 import { toBinaryMask } from '@core/image-trace'
-import { wallThickness } from '@core/engrave'
+import { freeSpace, wallThickness } from '@core/engrave'
 import { maskToRgba } from './preview-overlay'
 import {
   DEFAULT_CUT,
+  MAX_EMBOSS_MM,
+  MIN_CLEARANCE_MM,
   MIN_WALL_MM,
+  type CutMode,
   type FacePlane,
   type ImageSource,
   type IndexedMesh,
@@ -53,6 +56,7 @@ export class PlacementEditor {
   private svg!: SVGSVGElement
   private list!: HTMLElement
   private fields!: HTMLElement
+  private modeBar!: HTMLElement
   private active: Mode | null = null
 
   // Wall-thickness lookup for the depth limit. Ray-casting the whole mesh is
@@ -61,6 +65,11 @@ export class PlacementEditor {
   private wallMesh: IndexedMesh | null = null
   private wallCache = new Map<string, number>()
   private lastWall = Infinity
+
+  // Free-space lookup for the emboss height limit (same caching rules as the wall).
+  private neighbours: IndexedMesh[] = []
+  private freeCache = new Map<string, number>()
+  private lastFree = Infinity
 
   constructor(
     private readonly root: HTMLElement,
@@ -97,6 +106,28 @@ export class PlacementEditor {
     if (mesh === this.wallMesh) return
     this.wallMesh = mesh
     this.wallCache.clear()
+    this.freeCache.clear()
+  }
+
+  /** Meshes of the other pieces, used to cap how tall a raised image can be. */
+  setNeighbours(meshes: IndexedMesh[]): void {
+    this.neighbours = meshes
+    this.freeCache.clear()
+  }
+
+  /**
+   * Free space above `pl` (Infinity if clear). Cached and frozen during gestures,
+   * like `wallFor`.
+   */
+  private freeFor(pl: Placement): number {
+    const key = [pl.center[0], pl.center[1], pl.size[0], pl.size[1], pl.rotation].map((n) => n.toFixed(3)).join('|')
+    const cached = this.freeCache.get(key)
+    if (cached !== undefined) return (this.lastFree = cached)
+    if (this.active || !this.wallMesh || !this.face) return this.lastFree
+    const free = freeSpace([this.wallMesh, ...this.neighbours], this.face, pl)
+    if (this.freeCache.size > 200) this.freeCache.clear()
+    this.freeCache.set(key, free)
+    return (this.lastFree = free)
   }
 
   /**
@@ -155,7 +186,12 @@ export class PlacementEditor {
     closeBtn.addEventListener('click', () => this.close())
     header.appendChild(closeBtn)
 
-    this.root.replaceChildren(header, this.svg, this.list, this.fields)
+    // Etch | Emboss sits right under the title so it is always in view (the
+    // panel scrolls on short windows and the other fields are further down).
+    this.modeBar = document.createElement('div')
+    this.modeBar.className = 'editor-modebar'
+
+    this.root.replaceChildren(header, this.modeBar, this.svg, this.list, this.fields)
   }
 
   private computeView(): void {
@@ -203,7 +239,22 @@ export class PlacementEditor {
 
     this.placements.forEach((pl, i) => this.svg.appendChild(this.renderPlacement(pl, i)))
     this.renderList()
+    this.renderMode()
     this.renderFields()
+  }
+
+  /** The Etch | Emboss toggle for the selected image (hidden when none is selected). */
+  private renderMode(): void {
+    this.modeBar.replaceChildren()
+    const pl = this.placements[this.selected]
+    if (!pl) return
+    this.modeBar.appendChild(
+      modeField(pl.cut.mode, (m) => {
+        pl.cut.mode = m
+        this.render()
+        this.commit()
+      })
+    )
   }
 
   private renderPlacement(pl: Placement, index: number): SVGGElement {
@@ -258,7 +309,8 @@ export class PlacementEditor {
       const row = document.createElement('div')
       row.className = 'editor-row' + (i === this.selected ? ' sel' : '')
       const label = document.createElement('span')
-      label.textContent = `Image ${i + 1} (${pl.image.width}×${pl.image.height})`
+      label.textContent =
+        `Image ${i + 1} (${pl.image.width}×${pl.image.height})` + (pl.cut.mode === 'emboss' ? ' · raised' : '')
       label.addEventListener('click', () => {
         this.selected = i
         this.render()
@@ -292,7 +344,7 @@ export class PlacementEditor {
       numField('Center v (mm)', pl.center[1], commitNum((v) => (pl.center = [pl.center[0], v]))),
       numField('Width (mm)', pl.size[0], commitNum((v) => (pl.size = [Math.max(0.1, v), Math.max(0.1, v) / aspect]))),
       numField('Rotation (°)', (pl.rotation * 180) / Math.PI, commitNum((v) => (pl.rotation = (v * Math.PI) / 180))),
-      this.depthControl(pl),
+      pl.cut.mode === 'emboss' ? this.heightControl(pl) : this.depthControl(pl),
       numField('Threshold', pl.cut.threshold, commitNum((v) => (pl.cut.threshold = clamp(v, 0, 255)))),
       numField('Smoothing (mm)', pl.cut.smoothing, commitNum((v) => (pl.cut.smoothing = Math.max(0, v)))),
       boolField('Invert', pl.cut.invert, (b) => {
@@ -381,6 +433,97 @@ export class PlacementEditor {
     const row = document.createElement('div')
     row.className = 'editor-depth-row'
     row.append(slider, num, maxBtn)
+    wrap.append(title, row, note)
+    return wrap
+  }
+
+  /**
+   * Emboss height: slider + number + − / + steppers + "Max", limited to the free
+   * space above the image (minus the hinge clearance) and `MAX_EMBOSS_MM`, so a
+   * raised image can never reach another surface (FR-CUT-4). The engraver applies
+   * the same cap.
+   */
+  private heightControl(pl: Placement): HTMLElement {
+    const free = this.freeFor(pl)
+    const measured = Number.isFinite(free)
+    const room = measured ? Math.max(0, Math.floor((free - MIN_CLEARANCE_MM) * 100) / 100) : MAX_EMBOSS_MM
+    const maxH = Math.min(MAX_EMBOSS_MM, room)
+    const STEP = 0.1
+
+    const wrap = document.createElement('div')
+    wrap.className = 'editor-depth'
+    const title = document.createElement('div')
+    title.className = 'editor-depth-title'
+    title.textContent = 'Height (mm)'
+
+    const slider = document.createElement('input')
+    slider.type = 'range'
+    slider.min = '0'
+    slider.max = String(maxH)
+    slider.step = '0.01'
+    slider.value = String(Math.min(pl.cut.height, maxH))
+    slider.disabled = maxH <= 0
+
+    const num = document.createElement('input')
+    num.type = 'number'
+    num.min = '0'
+    num.max = String(maxH)
+    num.step = 'any'
+    num.value = String(round(pl.cut.height))
+
+    const minus = document.createElement('button')
+    minus.textContent = '−'
+    minus.title = `Thinner by ${STEP} mm`
+    const plus = document.createElement('button')
+    plus.textContent = '+'
+    plus.title = `Thicker by ${STEP} mm`
+    const maxBtn = document.createElement('button')
+    maxBtn.textContent = 'Max'
+    maxBtn.title = 'Raise as far as the free space above allows'
+    maxBtn.disabled = maxH <= 0
+
+    const note = document.createElement('div')
+    note.className = 'editor-note'
+    const refreshNote = (): void => {
+      const over = pl.cut.height > maxH + 1e-6
+      note.classList.toggle('warn', over || (measured && maxH <= 0))
+      if (measured && maxH <= 0) {
+        note.textContent = `Only ${free.toFixed(2)} mm free above this image — too little to raise it.`
+      } else if (!measured) {
+        note.textContent = `Nothing above this image; height up to ${MAX_EMBOSS_MM} mm.`
+      } else {
+        note.textContent =
+          `${free.toFixed(2)} mm free above · max height ${maxH.toFixed(2)} mm.` +
+          (over ? ` Will be raised ${maxH.toFixed(2)} mm.` : '')
+      }
+    }
+    refreshNote()
+
+    const set = (v: number, commit: boolean): void => {
+      pl.cut.height = clamp(v, 0, maxH)
+      slider.value = String(pl.cut.height)
+      num.value = String(round(pl.cut.height))
+      refreshNote()
+      if (commit) {
+        this.render()
+        this.commit()
+      }
+    }
+    slider.addEventListener('input', () => set(Number(slider.value), false))
+    slider.addEventListener('change', () => this.commit())
+    num.addEventListener('change', () => {
+      const v = Number(num.value)
+      if (Number.isFinite(v)) set(v, true)
+    })
+    minus.addEventListener('click', () => set(Math.round((pl.cut.height - STEP) * 100) / 100, true))
+    plus.addEventListener('click', () => set(Math.round((pl.cut.height + STEP) * 100) / 100, true))
+    maxBtn.addEventListener('click', () => set(maxH, true))
+    minus.disabled = maxH <= 0
+    plus.disabled = maxH <= 0
+
+    const row = document.createElement('div')
+    row.className = 'editor-depth-row'
+    row.append(minus, slider, plus, num, maxBtn)
     wrap.append(title, row, note)
     return wrap
   }
@@ -587,3 +730,28 @@ function boolField(label: string, value: boolean, onChange: (v: boolean) => void
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v))
 const clampRange = (v: number, lo: number, hi: number): number => (lo > hi ? (lo + hi) / 2 : clamp(v, lo, hi))
 const round = (v: number): number => Math.round(v * 100) / 100
+
+/** Etch | Emboss segmented toggle for a placement. */
+function modeField(mode: CutMode, onChange: (m: CutMode) => void): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'editor-mode'
+  const name = document.createElement('span')
+  name.textContent = 'This image is'
+  const seg = document.createElement('div')
+  seg.className = 'editor-mode-seg'
+  for (const [value, text, hint] of [
+    ['etch', 'Etch', 'Cut the image into the surface'],
+    ['emboss', 'Emboss', 'Raise the image above the surface']
+  ] as const) {
+    const b = document.createElement('button')
+    b.textContent = text
+    b.title = hint
+    b.classList.toggle('active', mode === value)
+    b.addEventListener('click', () => {
+      if (mode !== value) onChange(value)
+    })
+    seg.appendChild(b)
+  }
+  row.append(name, seg)
+  return row
+}

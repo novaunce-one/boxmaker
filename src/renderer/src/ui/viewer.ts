@@ -316,7 +316,15 @@ export class Viewer {
       const entry = this.pieces.get(fw.face.pieceId)
       if (!entry) continue
       try {
-        const { piece } = engraveFace({ id: fw.face.pieceId, mesh: entry.base }, fw.face, fw.placements, state.marginMm)
+        const others = [...this.pieces].filter(([id]) => id !== fw.face.pieceId).map(([, e]) => e.original)
+        const { piece } = engraveFace(
+          { id: fw.face.pieceId, mesh: entry.base },
+          fw.face,
+          fw.placements,
+          state.marginMm,
+          undefined,
+          others
+        )
         entry.object.geometry.dispose()
         entry.object.geometry = toGeometry(piece.mesh)
       } catch (err) {

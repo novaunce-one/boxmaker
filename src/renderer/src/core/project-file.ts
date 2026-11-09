@@ -1,4 +1,5 @@
 import {
+  DEFAULT_CUT,
   MAX_EXPORT_SCALE,
   MIN_EXPORT_SCALE,
   type CutSettings,
@@ -206,7 +207,10 @@ function cutFromJson(x: unknown): CutSettings {
   return {
     threshold: num(c.threshold, 'threshold'),
     invert: c.invert === true,
+    // Emboss fields were added after version 1: older files are etch-only.
+    mode: c.mode === 'emboss' ? 'emboss' : 'etch',
     depth: num(c.depth, 'depth'),
+    height: c.height === undefined ? DEFAULT_CUT.height : num(c.height, 'height'),
     smoothing: num(c.smoothing, 'smoothing')
   }
 }

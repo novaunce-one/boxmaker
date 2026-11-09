@@ -33,6 +33,9 @@ export function maskToRgba(
   return { width: mask.width, height: mask.height, data }
 }
 
+/** Raised (embossed) art reads as a light tint, etched art as a dark one. */
+const RAISED_COLOR: readonly [number, number, number] = [255, 205, 90]
+
 const v3 = (v: Vec3): THREE.Vector3 => new THREE.Vector3(v[0], v[1], v[2])
 
 /** Build a THREE group of overlay decals for the whole project (browser only). */
@@ -43,7 +46,9 @@ export function buildOverlayGroup(state: ProjectState): THREE.Group {
     const { origin, u, v, normal } = fw.face
     for (const pl of fw.placements) {
       const mask = toBinaryMask(pl.image, pl.cut)
-      const tex = new THREE.CanvasTexture(rgbaToCanvas(maskToRgba(mask)))
+      const tex = new THREE.CanvasTexture(
+        rgbaToCanvas(pl.cut.mode === 'emboss' ? maskToRgba(mask, RAISED_COLOR, 200) : maskToRgba(mask))
+      )
       tex.colorSpace = THREE.SRGBColorSpace
       const mesh = new THREE.Mesh(
         new THREE.PlaneGeometry(pl.size[0], pl.size[1]),

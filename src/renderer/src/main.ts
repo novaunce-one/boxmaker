@@ -16,6 +16,7 @@ import {
   cloneProjectState,
   type FacePlane,
   type ImageSource,
+  type IndexedMesh,
   type MeshPiece,
   type ProjectState,
   type Rect2
@@ -102,12 +103,16 @@ async function bootstrap(): Promise<void> {
       // The wall limit must be measured on the mesh the cut runs on (with de-etch fills).
       const base = viewer.baseMesh(active.pieceId)
       if (base) editor.setWallMesh(base)
+      editor.setNeighbours(otherMeshes(active.pieceId))
       const fw = state.faces.find(
         (f) => f.face.pieceId === active.pieceId && f.face.triangles[0] === active.triangles[0]
       )
       editor.setPlacements(fw ? fw.placements : [])
     }
   }
+
+  /** Meshes of every piece except `pieceId` (obstacles for a raised image). */
+  const otherMeshes = (pieceId: number): IndexedMesh[] => pieces.filter((p) => p.id !== pieceId).map((p) => p.mesh)
 
   /** Exact smallest gap between the template's pieces (null if it is a single piece / far apart). */
   const measureTemplateGap = (): number | null => {
@@ -312,6 +317,7 @@ async function bootstrap(): Promise<void> {
       (f) => f.face.pieceId === face.pieceId && f.face.triangles[0] === face.triangles[0]
     )
     if (piece) {
+      editor.setNeighbours(otherMeshes(face.pieceId))
       editor.open(
         face,
         piece.mesh,

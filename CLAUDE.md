@@ -61,7 +61,8 @@ tsconfig.web.json / vitest.config.ts).
 (hinge safeguard), noise-shell removal + inter-piece clearance (`components.ts`,
 `clearance.ts`), the face coordinate basis + flood-fill `detectFace` (`faces.ts`), image
 threshold + marching-squares `traceContours` (`image-trace.ts`), the manifold cut pipeline
-`engraveFace`, the de-etch `smoothRegion`, the whole-model `applyProject`, and the
+`engraveFace` (per-placement **etch** or **emboss** — raised art unioned outward after the
+etches, height capped by a `freeSpace` raycast against the other pieces), the de-etch `smoothRegion`, the whole-model `applyProject`, and the
 wall-thickness raycast `wallThickness` (`engrave.ts`), undo/redo history (`history.ts`),
 export-time validation + repair (`validate.ts`, `repair.ts`, `export.ts`), the export-time
 uniform scale with hinge-gap restoration (`scale-export.ts`: `scaleMeshes`, exact

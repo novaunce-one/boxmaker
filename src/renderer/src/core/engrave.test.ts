@@ -1,12 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { traceContours, tooFineForNozzle } from './image-trace'
 import { maskToRgba } from '../ui/preview-overlay'
-import { engraveFace, smoothRegion, wallThickness } from './engrave'
+import { engraveFace, freeSpace, smoothRegion, wallThickness } from './engrave'
+import { validateMesh } from './validate'
 import { componentVolume } from './components'
 import { findSeedTriangle, rebindFace } from './faces'
 import { initManifold } from './manifold'
 import type { BinaryMask } from './image-trace'
-import type { FacePlane, ImageSource, MeshPiece } from './types'
+import { DEFAULT_CUT, type FacePlane, type ImageSource, type MeshPiece, type Placement } from './types'
 
 describe('traceContours (marching squares)', () => {
   it('traces a filled block as one 4-corner ring', () => {
@@ -73,7 +74,7 @@ describe('engraveFace (real cut)', () => {
       size: [10, 10] as [number, number],
       rotation: 0,
       image,
-      cut: { threshold: 128, invert: false, depth: 1, smoothing: 0.1 }
+      cut: { ...DEFAULT_CUT, depth: 1 }
     }
 
     const { piece, warnings } = engraveFace(cube, topFace(), [placement], 2)
@@ -101,7 +102,7 @@ describe('smoothRegion (de-etch)', () => {
       size: [10, 10] as [number, number],
       rotation: 0,
       image,
-      cut: { threshold: 128, invert: false, depth: 1, smoothing: 0.1 }
+      cut: { ...DEFAULT_CUT, depth: 1 }
     }
     const etched = engraveFace(cube, topFace(), [placement], 2).piece
     const etchedVol = componentVolume(etched.mesh)
@@ -198,6 +199,78 @@ describe('wall-thickness guard (FR-HINGE-3)', () => {
   })
 })
 
+describe('embossed (raised) images (FR-CUT-4)', () => {
+  beforeAll(async () => {
+    await initManifold()
+  })
+
+  const raised = (h: number, size = 10, center: [number, number] = [0, 0]): Placement => ({
+    center,
+    size: [size, size],
+    rotation: 0,
+    image: solidBlackImage(16, 16),
+    cut: { ...DEFAULT_CUT, mode: 'emboss', height: h }
+  })
+  /** A box sitting `gap` mm above the cube's top face (cube top is z = 20). */
+  const lidAbove = (gap: number): MeshPiece => {
+    const b = box(20, 20, 5)
+    for (let i = 2; i < b.mesh.vertices.length; i += 3) b.mesh.vertices[i] += 20 + gap
+    return { id: 1, mesh: b.mesh }
+  }
+  const topZ = (m: MeshPiece['mesh']): number => {
+    let z = -Infinity
+    for (let i = 2; i < m.vertices.length; i += 3) z = Math.max(z, m.vertices[i])
+    return z
+  }
+
+  it('raises the image: adds ~area×height of volume, stands proud, stays watertight', () => {
+    const cube = unitCube(20)
+    const before = componentVolume(cube.mesh)
+    const { piece, warnings } = engraveFace(cube, topFace(), [raised(1)], 2)
+    expect(warnings).toEqual([])
+    expect(componentVolume(piece.mesh) - before).toBeGreaterThan(95) // 10×10 mm × 1 mm
+    expect(componentVolume(piece.mesh) - before).toBeLessThan(105)
+    expect(topZ(piece.mesh)).toBeCloseTo(21, 4)
+    expect(validateMesh(piece.mesh).isWatertight).toBe(true)
+  })
+
+  it('a thicker emboss adds proportionally more material', () => {
+    const base = componentVolume(unitCube(20).mesh)
+    const thin = engraveFace(unitCube(20), topFace(), [raised(0.5)], 2).piece
+    const thick = engraveFace(unitCube(20), topFace(), [raised(1.5)], 2).piece
+    expect(componentVolume(thick.mesh) - base).toBeGreaterThan(2.5 * (componentVolume(thin.mesh) - base))
+  })
+
+  it('caps the height so it stops short of another piece above, and warns', () => {
+    const cube = unitCube(20)
+    const lid = lidAbove(0.7)
+    expect(freeSpace([cube.mesh, lid.mesh], topFace(), raised(1))).toBeCloseTo(0.7, 3)
+    const { piece, warnings } = engraveFace(cube, topFace(), [raised(2)], 2, undefined, [lid.mesh])
+    expect(warnings.some((w) => w.includes('WARN-HEIGHT'))).toBe(true)
+    expect(topZ(piece.mesh)).toBeCloseTo(20.5, 3) // 0.7 free − 0.2 clearance
+  })
+
+  it('skips an emboss when there is no free space above it', () => {
+    const cube = unitCube(20)
+    const before = componentVolume(cube.mesh)
+    const { piece, warnings } = engraveFace(cube, topFace(), [raised(1)], 2, undefined, [lidAbove(0.1).mesh])
+    expect(warnings.some((w) => w.includes('no free space'))).toBe(true)
+    expect(componentVolume(piece.mesh)).toBeCloseTo(before, 3)
+  })
+
+  it('mixes etched and embossed images on one face', () => {
+    const cube = unitCube(20)
+    const before = componentVolume(cube.mesh)
+    const etch: Placement = { ...raised(1, 5, [-5, 0]), cut: { ...DEFAULT_CUT, depth: 1 } }
+    const { piece, warnings } = engraveFace(cube, topFace(), [etch, raised(1, 5, [5, 0])], 2)
+    expect(warnings).toEqual([])
+    // −25 mm³ etched, +25 mm³ raised → about even; and the top reaches 21.
+    expect(Math.abs(componentVolume(piece.mesh) - before)).toBeLessThan(2)
+    expect(topZ(piece.mesh)).toBeCloseTo(21, 4)
+    expect(validateMesh(piece.mesh).isWatertight).toBe(true)
+  })
+})
+
 // --- fixtures ------------------------------------------------------------
 
 function centeredPlacement(w: number, h: number, depth = 1): import('./types').Placement {
@@ -206,7 +279,7 @@ function centeredPlacement(w: number, h: number, depth = 1): import('./types').P
     size: [w, h],
     rotation: 0,
     image: solidBlackImage(16, 16),
-    cut: { threshold: 128, invert: false, depth, smoothing: 0.1 }
+    cut: { ...DEFAULT_CUT, depth }
   }
 }
 

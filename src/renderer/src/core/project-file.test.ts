@@ -36,7 +36,7 @@ function sampleState(): { state: ProjectState; shared: ImageSource } {
         face: face(),
         placements: [
           { center: [1, 2], size: [10, 20], rotation: 0.5, image: shared, cut: { ...DEFAULT_CUT, depth: 0.4, invert: true } },
-          { center: [-1, -2], size: [5, 10], rotation: 0, image: shared, cut: { ...DEFAULT_CUT } }
+          { center: [-1, -2], size: [5, 10], rotation: 0, image: shared, cut: { ...DEFAULT_CUT, mode: 'emboss', height: 1.4 } }
         ]
       }
     ],
@@ -64,6 +64,7 @@ describe('project file (FR-PROJECT)', () => {
       rotation: 0.5,
       cut: { ...DEFAULT_CUT, depth: 0.4, invert: true }
     })
+    expect(back.state.faces[0].placements[1].cut).toMatchObject({ mode: 'emboss', height: 1.4 })
     expect(back.state.smoothed[0].rects).toEqual(state.smoothed[0].rects)
     expect(back.state.smoothed[0].face.pieceId).toBe(1)
   })
@@ -102,6 +103,18 @@ describe('project file (FR-PROJECT)', () => {
 
     legacy.state.exportScale = 99
     await expect(deserializeProject(JSON.stringify(legacy), decode)).rejects.toThrow(/scale/)
+  })
+
+  it('opens older projects whose cut settings have no mode/height as etch-only', async () => {
+    const { state } = sampleState()
+    const text = await serializeProject({ templateName: 't.stl', template: new Uint8Array(4), state }, encode)
+    const legacy = JSON.parse(text)
+    for (const pl of legacy.state.faces[0].placements) {
+      delete pl.cut.mode
+      delete pl.cut.height
+    }
+    const back = await deserializeProject(JSON.stringify(legacy), decode)
+    expect(back.state.faces[0].placements[1].cut).toMatchObject({ mode: 'etch', height: DEFAULT_CUT.height })
   })
 
   it('rejects files that are not projects or are the wrong version', async () => {

@@ -84,7 +84,11 @@ export interface CutSettings {
   depth: number
   /** Emboss height in mm (outward along +normal). Used when `mode` is `emboss`. */
   height: number
-  /** Edge-smoothing / contour simplification tolerance in mm. */
+  /**
+   * Outline smoothing in mm: the Gaussian-blur sigma applied to the image before
+   * its outline is traced. 0 keeps raw pixel detail; larger values round pixel
+   * stair-steps (and fine detail below about this size).
+   */
   smoothing: number
 }
 
@@ -95,7 +99,7 @@ export const DEFAULT_CUT: CutSettings = {
   mode: 'etch',
   depth: 0.6,
   height: 0.6,
-  smoothing: 0.1
+  smoothing: 0.3
 }
 
 /** Tallest emboss offered, in mm. */

@@ -60,7 +60,7 @@ tsconfig.web.json / vitest.config.ts).
 `core/` (UI-free, the Vitest target): STL I/O, vertex welding, connected-component splitting
 (hinge safeguard), noise-shell removal + inter-piece clearance (`components.ts`,
 `clearance.ts`), the face coordinate basis + flood-fill `detectFace` (`faces.ts`), image
-threshold + marching-squares `traceContours` (`image-trace.ts`), the manifold cut pipeline
+threshold + smoothed sub-pixel marching-squares `traceSmoothContours` (blurred grayscale field, so outlines aren't pixel staircases; `image-trace.ts`), the manifold cut pipeline
 `engraveFace` (per-placement **etch** or **emboss** — raised art unioned outward after the
 etches, height capped by a `freeSpace` raycast against the other pieces), the de-etch `smoothRegion`, the whole-model `applyProject`, and the
 wall-thickness raycast `wallThickness` (`engrave.ts`), undo/redo history (`history.ts`),

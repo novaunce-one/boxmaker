@@ -1,6 +1,6 @@
-import { toBinaryMask } from '@core/image-trace'
+import { previewContours, previewKey } from '@core/image-trace'
 import { freeSpace, wallThickness } from '@core/engrave'
-import { maskToRgba } from './preview-overlay'
+import { contoursToCanvas } from './preview-overlay'
 import {
   DEFAULT_CUT,
   MAX_EMBOSS_MM,
@@ -346,7 +346,7 @@ export class PlacementEditor {
       numField('Rotation (°)', (pl.rotation * 180) / Math.PI, commitNum((v) => (pl.rotation = (v * Math.PI) / 180))),
       pl.cut.mode === 'emboss' ? this.heightControl(pl) : this.depthControl(pl),
       numField('Threshold', pl.cut.threshold, commitNum((v) => (pl.cut.threshold = clamp(v, 0, 255)))),
-      numField('Smoothing (mm)', pl.cut.smoothing, commitNum((v) => (pl.cut.smoothing = Math.max(0, v)))),
+      this.smoothingControl(pl),
       boolField('Invert', pl.cut.invert, (b) => {
         pl.cut.invert = b
         this.render()
@@ -433,6 +433,62 @@ export class PlacementEditor {
     const row = document.createElement('div')
     row.className = 'editor-depth-row'
     row.append(slider, num, maxBtn)
+    wrap.append(title, row, note)
+    return wrap
+  }
+
+  /**
+   * Outline smoothing: slider + number (mm of blur before the outline is traced).
+   * Scrubbing re-draws only the selected image's preview in place (rebuilding the
+   * panel mid-drag would drop the slider); the cut/overlay update on release.
+   */
+  private smoothingControl(pl: Placement): HTMLElement {
+    const MAX = 1
+    const wrap = document.createElement('div')
+    wrap.className = 'editor-depth'
+    const title = document.createElement('div')
+    title.className = 'editor-depth-title'
+    title.textContent = 'Outline smoothing (mm)'
+
+    const slider = document.createElement('input')
+    slider.type = 'range'
+    slider.min = '0'
+    slider.max = String(MAX)
+    slider.step = '0.05'
+    slider.value = String(Math.min(pl.cut.smoothing, MAX))
+
+    const num = document.createElement('input')
+    num.type = 'number'
+    num.min = '0'
+    num.step = 'any'
+    num.value = String(round(pl.cut.smoothing))
+
+    const note = document.createElement('div')
+    note.className = 'editor-note'
+    note.textContent = '0 = raw pixels. Raise it to round jagged edges; very fine detail softens too.'
+
+    const index = this.selected
+    const redrawPreview = (): void => {
+      const img = this.svg.querySelector(`g[data-index="${index}"] image`)
+      if (img) img.setAttribute('href', maskDataUrl(pl))
+    }
+    slider.addEventListener('input', () => {
+      pl.cut.smoothing = Number(slider.value)
+      num.value = String(round(pl.cut.smoothing))
+      redrawPreview()
+    })
+    slider.addEventListener('change', () => this.commit())
+    num.addEventListener('change', () => {
+      const v = Number(num.value)
+      if (!Number.isFinite(v)) return
+      pl.cut.smoothing = Math.max(0, v)
+      this.render()
+      this.commit()
+    })
+
+    const row = document.createElement('div')
+    row.className = 'editor-depth-row'
+    row.append(slider, num)
     wrap.append(title, row, note)
     return wrap
   }
@@ -638,37 +694,25 @@ function faceBBox(mesh: IndexedMesh, face: FacePlane): Rect2 {
 }
 
 /**
- * Mask data URLs keyed by image identity + threshold/invert. The editor
- * re-renders on every pointer move while dragging; without this each frame would
- * re-threshold and re-encode the whole image.
+ * Preview data URLs keyed by image identity + everything the outline depends on
+ * (threshold, invert, smoothing, coarse size). The editor re-renders on every
+ * pointer move while dragging; without this each frame would re-trace and
+ * re-encode the whole image.
  */
 const maskCache = new WeakMap<ImageSource, Map<string, string>>()
 
-/** The thresholded mask of a placement as a data URL for the live preview. */
+/** The smoothed artwork outline of a placement as a data URL for the live preview. */
 function maskDataUrl(pl: Placement): string {
-  const key = `${pl.cut.threshold}|${pl.cut.invert}`
+  const key = previewKey(pl)
   let perImage = maskCache.get(pl.image)
   if (!perImage) maskCache.set(pl.image, (perImage = new Map()))
   let url = perImage.get(key)
   if (url === undefined) {
-    url = renderMaskDataUrl(pl)
-    if (perImage.size >= 8) perImage.clear() // bound memory while a slider is scrubbed
+    url = contoursToCanvas(previewContours(pl), pl.size, [20, 20, 20], 235).toDataURL()
+    if (perImage.size >= 12) perImage.clear() // bound memory while a slider is scrubbed
     perImage.set(key, url)
   }
   return url
-}
-
-function renderMaskDataUrl(pl: Placement): string {
-  const mask = toBinaryMask(pl.image, pl.cut)
-  const img = maskToRgba(mask, [20, 20, 20], 235)
-  const canvas = document.createElement('canvas')
-  canvas.width = img.width
-  canvas.height = img.height
-  const ctx = canvas.getContext('2d')!
-  const data = ctx.createImageData(img.width, img.height)
-  data.data.set(img.data)
-  ctx.putImageData(data, 0, 0)
-  return canvas.toDataURL()
 }
 
 function clonePlacement(p: Placement): Placement {

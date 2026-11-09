@@ -1,6 +1,6 @@
 import * as THREE from 'three'
-import { toBinaryMask, type BinaryMask } from '@core/image-trace'
-import type { ProjectState, Vec3 } from '@core/types'
+import { previewContours, type BinaryMask, type Contour } from '@core/image-trace'
+import type { ProjectState, Vec2, Vec3 } from '@core/types'
 
 /**
  * View 1 — the fast "overlay" preview (SPEC §2 FR-VIEW): the thresholded image
@@ -45,9 +45,14 @@ export function buildOverlayGroup(state: ProjectState): THREE.Group {
   for (const fw of state.faces) {
     const { origin, u, v, normal } = fw.face
     for (const pl of fw.placements) {
-      const mask = toBinaryMask(pl.image, pl.cut)
+      // Drawn from the smoothed outline that will actually be cut / raised.
       const tex = new THREE.CanvasTexture(
-        rgbaToCanvas(pl.cut.mode === 'emboss' ? maskToRgba(mask, RAISED_COLOR, 200) : maskToRgba(mask))
+        contoursToCanvas(
+          previewContours(pl),
+          pl.size,
+          pl.cut.mode === 'emboss' ? RAISED_COLOR : [15, 15, 15],
+          pl.cut.mode === 'emboss' ? 200 : 210
+        )
       )
       tex.colorSpace = THREE.SRGBColorSpace
       const mesh = new THREE.Mesh(
@@ -72,13 +77,34 @@ export function buildOverlayGroup(state: ProjectState): THREE.Group {
   return group
 }
 
-function rgbaToCanvas(img: Rgba): HTMLCanvasElement {
+/**
+ * Fill traced outlines (normalized [0,1], y up) into a canvas sized to the
+ * placement's aspect, using the even-odd rule so holes stay open. The same rings
+ * feed the real cut, so the preview shows the exact smoothed outline.
+ */
+export function contoursToCanvas(
+  rings: readonly Contour[],
+  sizeMm: Vec2,
+  color: readonly [number, number, number] = [15, 15, 15],
+  alpha = 210,
+  longEdgePx = 512
+): HTMLCanvasElement {
+  const aspect = sizeMm[0] / sizeMm[1]
   const canvas = document.createElement('canvas')
-  canvas.width = img.width
-  canvas.height = img.height
+  canvas.width = Math.max(1, Math.round(aspect >= 1 ? longEdgePx : longEdgePx * aspect))
+  canvas.height = Math.max(1, Math.round(aspect >= 1 ? longEdgePx / aspect : longEdgePx))
   const ctx = canvas.getContext('2d')!
-  const imageData = ctx.createImageData(img.width, img.height)
-  imageData.data.set(img.data)
-  ctx.putImageData(imageData, 0, 0)
+  ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha / 255})`
+  ctx.beginPath()
+  for (const ring of rings) {
+    ring.forEach(([x, y], i) => {
+      const px = x * canvas.width
+      const py = (1 - y) * canvas.height
+      if (i === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
+    })
+    ctx.closePath()
+  }
+  ctx.fill('evenodd')
   return canvas
 }

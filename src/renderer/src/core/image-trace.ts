@@ -1,4 +1,4 @@
-import type { CutSettings, ImageSource, Vec2 } from './types'
+import type { CutSettings, ImageSource, Placement, Vec2 } from './types'
 
 /**
  * Image → binary mask → contours (docs/PLAN.md §4).
@@ -132,6 +132,263 @@ function mergeCollinear(pts: [number, number][]): [number, number][] {
 /** Grid coords → [0,1] with y flipped so the image reads upright (y up). */
 function normalizeRing(pts: [number, number][], w: number, h: number): Contour {
   return pts.map(([x, y]) => [x / w, 1 - y / h] as Vec2)
+}
+
+// --- smooth (sub-pixel) tracing -------------------------------------------
+
+/**
+ * Smooth outlines (SPEC §2.7 FR-IMG-5).
+ *
+ * Tracing the binary mask follows pixel edges, so every outline is a staircase
+ * (steps as wide as an image pixel — hundreds of µm for a low-res logo). Instead
+ * we keep the grayscale: luminance → signed field (positive = artwork) → optional
+ * Gaussian blur whose sigma is the user's smoothing in mm → marching squares with
+ * linear interpolation along cell edges, which lands vertices at sub-pixel
+ * positions. Pixel blocks blur into rounded curves and anti-aliased edges trace
+ * exactly, so the result is smooth without hand-tuned polyline filtering.
+ */
+
+/** Signed scalar grid, row-major; artwork where value > 0. */
+export interface ScalarField {
+  width: number
+  height: number
+  values: Float32Array
+}
+
+/** Largest blur sigma, in field cells (keeps the kernel cheap). */
+const MAX_SIGMA_CELLS = 12
+/** Below this sigma (cells) blurring does nothing useful, so skip it. */
+const MIN_SIGMA_CELLS = 0.25
+
+/**
+ * Luminance → signed field (`threshold − luma`, flipped by Invert), area-averaged
+ * down so the long edge is ≤ `maxLongEdge`. Images smaller than that keep their
+ * native resolution (interpolation and blur handle the rest).
+ */
+export function buildField(
+  image: ImageSource,
+  cut: Pick<CutSettings, 'threshold' | 'invert'>,
+  maxLongEdge = DEFAULT_MAX_LONG_EDGE
+): ScalarField {
+  const scale = Math.min(1, maxLongEdge / Math.max(image.width, image.height))
+  const width = Math.max(1, Math.round(image.width * scale))
+  const height = Math.max(1, Math.round(image.height * scale))
+  const values = new Float32Array(width * height)
+  for (let y = 0; y < height; y++) {
+    const y0 = Math.min(image.height - 1, Math.floor(y / scale))
+    const y1 = Math.min(image.height, Math.max(y0 + 1, Math.floor((y + 1) / scale)))
+    for (let x = 0; x < width; x++) {
+      const x0 = Math.min(image.width - 1, Math.floor(x / scale))
+      const x1 = Math.min(image.width, Math.max(x0 + 1, Math.floor((x + 1) / scale)))
+      let sum = 0
+      let n = 0
+      for (let sy = y0; sy < y1; sy++) {
+        for (let sx = x0; sx < x1; sx++) {
+          const p = (sy * image.width + sx) * 4
+          sum += 0.299 * image.rgba[p] + 0.587 * image.rgba[p + 1] + 0.114 * image.rgba[p + 2] // Rec. 601
+          n++
+        }
+      }
+      const lum = sum / n
+      values[y * width + x] = cut.invert ? lum - cut.threshold : cut.threshold - lum
+    }
+  }
+  return { width, height, values }
+}
+
+/** Separable Gaussian blur with clamp-to-edge borders. `sigma` is in cells. */
+export function gaussianBlur(field: ScalarField, sigma: number): ScalarField {
+  if (sigma < MIN_SIGMA_CELLS) return field
+  const s = Math.min(sigma, MAX_SIGMA_CELLS)
+  const radius = Math.ceil(s * 3)
+  const kernel = new Float32Array(radius * 2 + 1)
+  let total = 0
+  for (let i = -radius; i <= radius; i++) {
+    const k = Math.exp(-(i * i) / (2 * s * s))
+    kernel[i + radius] = k
+    total += k
+  }
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= total
+
+  const { width: w, height: h } = field
+  const tmp = new Float32Array(w * h)
+  const out = new Float32Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let acc = 0
+      for (let i = -radius; i <= radius; i++) {
+        const xx = Math.min(w - 1, Math.max(0, x + i))
+        acc += field.values[y * w + xx] * kernel[i + radius]
+      }
+      tmp[y * w + x] = acc
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let acc = 0
+      for (let i = -radius; i <= radius; i++) {
+        const yy = Math.min(h - 1, Math.max(0, y + i))
+        acc += tmp[yy * w + x] * kernel[i + radius]
+      }
+      out[y * w + x] = acc
+    }
+  }
+  return { width: w, height: h, values: out }
+}
+
+// Marching-squares segment table. Corner bits: a=TL(1) b=TR(2) c=BR(4) d=BL(8)
+// (y-down); edges: T, R, B, L. Each pair is a directed segment [from, to] with
+// the artwork on a consistent side, so shared edges chain segments into loops.
+const T = 0,
+  R = 1,
+  B = 2,
+  L = 3
+const SEGMENTS: Record<number, [number, number][]> = {
+  1: [[T, L]],
+  2: [[R, T]],
+  3: [[R, L]],
+  4: [[B, R]],
+  // 5 and 10 are saddles, resolved by the cell centre in `traceField`
+  6: [[B, T]],
+  7: [[B, L]],
+  8: [[L, B]],
+  9: [[T, B]],
+  11: [[R, B]],
+  12: [[L, R]],
+  13: [[T, R]],
+  14: [[L, T]]
+}
+
+/**
+ * Marching squares with linear interpolation over `field`; returns closed rings
+ * in the field's pixel coordinates (cell centres at x + 0.5). The field is padded
+ * with one background cell so shapes touching the border still close.
+ */
+function traceField(field: ScalarField): [number, number][][] {
+  const gw = field.width + 2
+  const gh = field.height + 2
+  const grid = new Float32Array(gw * gh).fill(-1)
+  for (let y = 0; y < field.height; y++) {
+    for (let x = 0; x < field.width; x++) grid[(y + 1) * gw + x + 1] = field.values[y * field.width + x]
+  }
+
+  // Edge ids: horizontal edge (x,y)–(x+1,y) = (y*gw+x)*2, vertical (x,y)–(x,y+1) = (y*gw+x)*2+1.
+  const hId = (x: number, y: number): number => (y * gw + x) * 2
+  const vId = (x: number, y: number): number => (y * gw + x) * 2 + 1
+  const next = new Map<number, number>()
+
+  for (let y = 0; y < gh - 1; y++) {
+    for (let x = 0; x < gw - 1; x++) {
+      const a = grid[y * gw + x] > 0
+      const b = grid[y * gw + x + 1] > 0
+      const c = grid[(y + 1) * gw + x + 1] > 0
+      const d = grid[(y + 1) * gw + x] > 0
+      const mask = (a ? 1 : 0) | (b ? 2 : 0) | (c ? 4 : 0) | (d ? 8 : 0)
+      if (mask === 0 || mask === 15) continue
+
+      let segs = SEGMENTS[mask]
+      if (mask === 5 || mask === 10) {
+        const centre =
+          (grid[y * gw + x] + grid[y * gw + x + 1] + grid[(y + 1) * gw + x + 1] + grid[(y + 1) * gw + x]) / 4 > 0
+        segs =
+          mask === 5
+            ? centre
+              ? [[T, R], [B, L]] // artwork joined through the middle
+              : [[T, L], [B, R]]
+            : centre
+              ? [[L, T], [R, B]]
+              : [[R, T], [L, B]]
+      }
+      const edge = (e: number): number =>
+        e === T ? hId(x, y) : e === B ? hId(x, y + 1) : e === L ? vId(x, y) : vId(x + 1, y)
+      for (const [from, to] of segs) next.set(edge(from), edge(to))
+    }
+  }
+
+  const pointOf = (id: number): [number, number] => {
+    const idx = id >> 1
+    const sx = idx % gw
+    const sy = Math.floor(idx / gw)
+    const f0 = grid[sy * gw + sx]
+    if (id & 1) {
+      const f1 = grid[(sy + 1) * gw + sx]
+      return [sx, sy + f0 / (f0 - f1)]
+    }
+    const f1 = grid[sy * gw + sx + 1]
+    return [sx + f0 / (f0 - f1), sy]
+  }
+
+  const rings: [number, number][][] = []
+  const seen = new Set<number>()
+  for (const start of next.keys()) {
+    if (seen.has(start)) continue
+    const ring: [number, number][] = []
+    let cur: number | undefined = start
+    while (cur !== undefined && !seen.has(cur)) {
+      seen.add(cur)
+      const [gx, gy] = pointOf(cur)
+      ring.push([gx - 0.5, gy - 0.5]) // padded index p ↔ pixel coordinate p − 0.5
+      cur = next.get(cur)
+    }
+    if (ring.length >= 3) rings.push(ring)
+  }
+  return rings
+}
+
+/**
+ * Smooth contours of an image's artwork as normalized [0,1] rings (x right, y
+ * **up**), the same shape `traceContours` returns. `smoothingMm` is the Gaussian
+ * blur sigma in mm of the placed image (`sizeMm` = its width × height); 0 keeps
+ * only the sub-pixel interpolation.
+ */
+export function traceSmoothContours(
+  image: ImageSource,
+  cut: Pick<CutSettings, 'threshold' | 'invert' | 'smoothing'>,
+  sizeMm: Vec2,
+  maxLongEdge = DEFAULT_MAX_LONG_EDGE
+): Contour[] {
+  const field = buildField(image, cut, maxLongEdge)
+  const cellMm = sizeMm[0] / field.width
+  const sigma = cellMm > 0 ? Math.max(0, cut.smoothing) / cellMm : 0
+  const rings = traceField(gaussianBlur(field, sigma))
+  const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
+  return rings.map((ring) =>
+    ring.map(([x, y]) => [clamp01(x / field.width), 1 - clamp01(y / field.height)] as Vec2)
+  )
+}
+
+/** Quantize a size so tiny resizes share one preview trace (≈15% steps). */
+function sizeBucket(mm: number): number {
+  return Math.round(Math.log(Math.max(mm, 0.01)) / Math.log(1.15))
+}
+
+/** Cache key for a placement's preview trace (everything the outline depends on). */
+export function previewKey(pl: Pick<Placement, 'size' | 'cut'>): string {
+  return `${pl.cut.threshold}|${pl.cut.invert}|${pl.cut.smoothing}|${sizeBucket(pl.size[0])}`
+}
+
+const previewCache = new WeakMap<ImageSource, Map<string, Contour[]>>()
+
+/**
+ * Cached smooth contours for the 2D editor and overlay previews. The editor
+ * re-renders on every pointer move, so the trace is keyed on image identity,
+ * threshold, invert, smoothing and a coarse size bucket (the blur only depends on
+ * size through the cell width, so a sliver of resize needn't retrace). Geometry
+ * (`engraveFace`) uses the exact, uncached `traceSmoothContours`.
+ */
+export function previewContours(pl: Pick<Placement, 'image' | 'size' | 'cut'>): Contour[] {
+  const bucket = sizeBucket(pl.size[0])
+  const key = previewKey(pl)
+  let perImage = previewCache.get(pl.image)
+  if (!perImage) previewCache.set(pl.image, (perImage = new Map()))
+  let rings = perImage.get(key)
+  if (!rings) {
+    const w = Math.pow(1.15, bucket)
+    rings = traceSmoothContours(pl.image, pl.cut, [w, w * (pl.size[1] / pl.size[0])])
+    if (perImage.size >= 12) perImage.clear() // bound memory while a slider is scrubbed
+    perImage.set(key, rings)
+  }
+  return rings
 }
 
 /**

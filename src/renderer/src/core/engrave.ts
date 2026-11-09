@@ -1,5 +1,5 @@
 import { manifold } from './manifold'
-import { toBinaryMask, traceContours } from './image-trace'
+import { traceSmoothContours } from './image-trace'
 import { componentVolume } from './components'
 import { rebindFace } from './faces'
 import { validateMesh } from './validate'
@@ -27,6 +27,9 @@ type Mat4 = [
   number, number, number, number
 ]
 
+/** Vertex-thinning tolerance for traced outlines, in mm (the smoothing itself happens in the trace). */
+const SIMPLIFY_MM = 0.02
+
 const START_EPS = 0.01 // mm the cutter starts outside the surface
 
 export function engraveFace(
@@ -51,10 +54,9 @@ export function engraveFace(
 
   /** Placement artwork in face mm, clipped to the margin; null if nothing is left. */
   const clippedArt = (pl: Placement): import('manifold-3d').CrossSection | null => {
-    const mask = toBinaryMask(pl.image, pl.cut)
-    const polys = contoursToMm(traceContours(mask, pl.cut.smoothing), pl)
+    const polys = contoursToMm(traceSmoothContours(pl.image, pl.cut, pl.size), pl)
     if (polys.length === 0) return null
-    let art = new CrossSection(polys, 'EvenOdd').simplify(pl.cut.smoothing)
+    let art = new CrossSection(polys, 'EvenOdd').simplify(SIMPLIFY_MM)
     art = art.intersect(clip)
     if (art.area() <= 0) {
       warnings.push('A placement is entirely outside the face margin and was skipped.')

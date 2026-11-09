@@ -90,8 +90,8 @@ damaging the print-in-place hinge.
 
 ### 2.5 Cut settings (`FR-CUT`)
 - **FR-CUT-1** Per placement the user MUST control: threshold (0–255), invert
-  (bool), depth (mm), and edge smoothing (mm). Defaults: threshold 128, invert
-  off, depth **0.6 mm**, smoothing 0.1 mm (`OQ-3`).
+  (bool), depth (mm), and **outline smoothing** (mm; slider + number). Defaults:
+  threshold 128, invert off, depth **0.6 mm**, smoothing **0.3 mm** (`OQ-3`; see FR-IMG-6).
 - **FR-CUT-2** Edge margin MUST be adjustable per project; default **2 mm** (`OQ-3`).
 - **FR-CUT-3** The depth control (slider + number + **Max**) MUST be limited to
   the measured wall thickness under the image minus `MIN_WALL_MM`, so an
@@ -131,12 +131,24 @@ damaging the print-in-place hinge.
   thresholded, optionally inverted, into a binary mask (1 = cut, 0 = keep).
 - **FR-IMG-2** The mask MUST be downscaled so its long edge is ≈ 400 px before
   tracing.
-- **FR-IMG-3** The mask MUST be traced with marching squares into contours
-  (outer rings + holes) and simplified at the smoothing tolerance.
+- **FR-IMG-3** The artwork outline MUST be traced with marching squares into
+  contours (outer rings + holes); geometry uses the smoothed sub-pixel tracer of
+  FR-IMG-6 and is then thinned at a fixed 0.02 mm tolerance. (The binary-mask
+  `traceContours` remains for tests and the nozzle check.)
 - **FR-IMG-4** Contours MUST build a manifold `CrossSection` using the **EvenOdd**
   fill rule, then `simplify()`.
 - **FR-IMG-5** The app MUST flag artwork whose thinnest traced feature is below
   ≈ 0.4 mm at the placed size (too fine for a 0.4 mm nozzle) with a warning.
+- **FR-IMG-6** Outlines MUST NOT be pixel staircases. The tracer MUST keep the
+  grayscale (signed field `threshold − luma`, flipped by Invert), blur it with a
+  Gaussian whose sigma is the placement's **smoothing** in mm (converted to field
+  cells via the placed width; 0 skips the blur), and run marching squares with
+  linear interpolation along cell edges so vertices land at sub-pixel positions.
+  Shapes touching the image border MUST still close (background padding).
+- **FR-IMG-7** The overlay decal and the editor's preview MUST be drawn from the
+  same traced rings (even-odd fill) as the real cut/emboss, so the previews show
+  the smoothing. Preview traces are cached by image, threshold, invert, smoothing
+  and a coarse size bucket; geometry uses the exact, uncached trace.
 
 ### 2.8 Engraving (boolean) pipeline (`FR-ENG`)
 For each placement on the selected face, the app MUST:
@@ -323,7 +335,7 @@ Authoritative TypeScript lives in `src/renderer/src/core/types.ts` and
 `ProjectState` now also carries `smoothed: SmoothWork[]` (the de-etch operations).
 
 Constants (normative defaults): `DEFAULT_CUT` (threshold 128, invert false,
-depth 0.6, smoothing 0.1), `DEFAULT_MARGIN_MM = 2`, `MIN_WALL_MM = 0.8`,
+depth 0.6, smoothing 0.3), `DEFAULT_MARGIN_MM = 2`, `MIN_WALL_MM = 0.8`,
 `EMPTY_PROJECT`, History limit 100.
 
 ---
@@ -413,6 +425,7 @@ Traceable to the FR IDs; Vitest targets `core/`.
 | 2D editor: drag/resize(aspect)/rotate + numeric mm·° + margin clamp | `FR-EDIT-1..5`, `FR-CUT-1/2` ✅ implemented (UI) |
 | Flood-fill isolates one face on the real template | `FR-FACE-1/2` — pending STL |
 | Marching-squares trace of a block / block-with-hole → 1 / 2 rings | `FR-IMG-3/4` ✅ implemented |
+| Smoothed trace: pixelated circle rounder, block area true, sub-pixel edge, holes/invert/border | `FR-IMG-6` ✅ implemented |
 | engraveFace debosses a cube: volume drops, stays watertight | `FR-ENG-1..4` ✅ implemented (synthetic) |
 | smoothRegion refills an etched notch flush (volume restored) | `FR-DEETCH-2/3/5` ✅ implemented (synthetic) |
 | Preview re-renders on undo/redo in both overlay and cut modes | `FR-PREVIEW-1/2` ✅ implemented |

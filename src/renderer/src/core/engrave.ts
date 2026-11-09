@@ -33,7 +33,8 @@ export function engraveFace(
   piece: MeshPiece,
   face: FacePlane,
   placements: Placement[],
-  marginMm: number
+  marginMm: number,
+  minWallMm = MIN_WALL_MM
 ): EngraveResult {
   if (placements.length === 0) return { piece, warnings: [] }
   const { CrossSection } = manifold()
@@ -59,10 +60,10 @@ export function engraveFace(
     // Wall-thickness guard (FR-HINGE-3): cap depth so ≥ MIN_WALL_MM remains.
     let depth = pl.cut.depth
     const wall = wallThickness(piece.mesh, face, pl)
-    if (Number.isFinite(wall) && depth > wall - MIN_WALL_MM) {
-      depth = Math.max(0, wall - MIN_WALL_MM)
+    if (Number.isFinite(wall) && depth > wall - minWallMm) {
+      depth = Math.max(0, wall - minWallMm)
       warnings.push(
-        `A cut ${pl.cut.depth.toFixed(2)} mm deep would leave < ${MIN_WALL_MM} mm of wall; ` +
+        `A cut ${pl.cut.depth.toFixed(2)} mm deep would leave < ${minWallMm.toFixed(2)} mm of wall; ` +
           `capped to ${depth.toFixed(2)} mm (WARN-DEPTH).`
       )
     }
@@ -117,7 +118,12 @@ export function smoothRegion(
  */
 export function applyProject(
   pieces: MeshPiece[],
-  state: ProjectState
+  state: ProjectState,
+  /**
+   * Wall left behind by any cut, in the template's own mm. Export passes
+   * `MIN_WALL_MM / exportScale` so walls are still thick enough once scaled.
+   */
+  minWallMm = MIN_WALL_MM
 ): { pieces: MeshPiece[]; warnings: string[] } {
   const warnings: string[] = []
   const out = pieces.map((piece) => {
@@ -131,7 +137,7 @@ export function applyProject(
     }
     for (const fw of state.faces) {
       if (fw.face.pieceId !== piece.id || fw.placements.length === 0) continue
-      const r = engraveFace(work, fw.face, fw.placements, state.marginMm)
+      const r = engraveFace(work, fw.face, fw.placements, state.marginMm, minWallMm)
       work = r.piece
       warnings.push(...r.warnings)
     }
@@ -249,7 +255,7 @@ function rayTriangle(
  * accept an inward-wound mesh as an inverted solid, which silently breaks later
  * unions (a de-etch would carve instead of fill). See repair.ts `orientOutward`.
  */
-function toManifold(mesh: IndexedMesh): import('manifold-3d').Manifold {
+export function toManifold(mesh: IndexedMesh): import('manifold-3d').Manifold {
   const { Manifold, Mesh } = manifold()
   const make = (m: IndexedMesh): import('manifold-3d').Manifold =>
     Manifold.ofMesh(new Mesh({ numProp: 3, vertProperties: m.vertices, triVerts: m.indices }))
@@ -260,7 +266,7 @@ function toManifold(mesh: IndexedMesh): import('manifold-3d').Manifold {
   }
 }
 
-function fromManifold(solid: import('manifold-3d').Manifold): IndexedMesh {
+export function fromManifold(solid: import('manifold-3d').Manifold): IndexedMesh {
   const mesh = solid.getMesh()
   const n = mesh.numProp
   let vertices: Float32Array

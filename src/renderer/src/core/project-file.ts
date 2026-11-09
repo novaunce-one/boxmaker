@@ -1,4 +1,15 @@
-import type { CutSettings, FacePlane, ImageSource, MeshPiece, ProjectState, Rect2, Vec2, Vec3 } from './types'
+import {
+  MAX_EXPORT_SCALE,
+  MIN_EXPORT_SCALE,
+  type CutSettings,
+  type FacePlane,
+  type ImageSource,
+  type MeshPiece,
+  type ProjectState,
+  type Rect2,
+  type Vec2,
+  type Vec3
+} from './types'
 
 /**
  * Project file (de)serialization (SPEC §2.16 FR-PROJECT). A `.boxmaker` file is
@@ -69,7 +80,13 @@ export async function serializeProject(doc: ProjectDocument, encode: ImageEncode
     version: PROJECT_VERSION,
     template: { name: doc.templateName, data: toBase64(doc.template) },
     images,
-    state: { marginMm: doc.state.marginMm, faces, smoothed }
+    state: {
+      marginMm: doc.state.marginMm,
+      exportScale: doc.state.exportScale,
+      hingeGapMm: doc.state.hingeGapMm,
+      faces,
+      smoothed
+    }
   })
 }
 
@@ -126,7 +143,20 @@ export async function deserializeProject(text: string, decode: ImageDecoder): Pr
     }
   })
 
-  return { templateName, template, state: { marginMm: num(st.marginMm, 'margin'), faces, smoothed } }
+  // Export settings were added after version 1 shipped: files without them
+  // open at 100% / "match template" gap.
+  const exportScale = st.exportScale === undefined ? 1 : num(st.exportScale, 'export scale')
+  if (exportScale < MIN_EXPORT_SCALE || exportScale > MAX_EXPORT_SCALE) {
+    throw new Error('Corrupt project: export scale out of range.')
+  }
+  const hingeGapMm =
+    st.hingeGapMm === undefined || st.hingeGapMm === null ? null : num(st.hingeGapMm, 'hinge gap')
+
+  return {
+    templateName,
+    template,
+    state: { marginMm: num(st.marginMm, 'margin'), exportScale, hingeGapMm, faces, smoothed }
+  }
 }
 
 /**

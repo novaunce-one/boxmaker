@@ -1,4 +1,4 @@
-import type { PreviewMode } from '@core/types'
+import { MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, type PreviewMode } from '@core/types'
 
 /**
  * The sidebar controls: load template, preview-mode toggle, add image,
@@ -15,6 +15,8 @@ export interface ControlsCallbacks {
   onUndo: () => void
   onRedo: () => void
   onExport: () => void | Promise<void>
+  /** Export scale (fraction, 1 = 100%) or hinge-gap override (`null` = match template) changed. */
+  onExportSettingsChange: (scale: number, hingeGapMm: number | null) => void
 }
 
 export class Controls {
@@ -25,6 +27,13 @@ export class Controls {
   private cutBtn!: HTMLButtonElement
   private deEtchBtn!: HTMLButtonElement
   private exportBtn!: HTMLButtonElement
+  private scaleInput!: HTMLInputElement
+  private gapInput!: HTMLInputElement
+  private exportHint!: HTMLElement
+  private modelLoaded = false
+  private exportBusy = false
+  private templateGap: number | null | undefined
+  private sizeText = ''
   private saveItem: HTMLButtonElement | null = null
   private saveAsItem: HTMLButtonElement | null = null
   private deEtchOn = false
@@ -72,6 +81,17 @@ export class Controls {
     // Export: assemble, repair, validate, and save (.stl desktop / .zip web).
     this.exportBtn = this.makeButton('Export STL…', () => void this.cb.onExport())
 
+    // Uniform scale applied at export; hinge gaps are re-opened afterwards.
+    this.scaleInput = numberInput(MIN_EXPORT_SCALE * 100, MAX_EXPORT_SCALE * 100, 1)
+    this.scaleInput.value = '100'
+    this.gapInput = numberInput(0.05, 2, 0.01)
+    this.gapInput.addEventListener('change', () => this.commitExportSettings())
+    this.scaleInput.addEventListener('change', () => this.commitExportSettings())
+    this.exportHint = document.createElement('div')
+    this.exportHint.className = 'hint-text'
+    const scaleRow = fieldRow('Scale %', this.scaleInput)
+    const gapRow = fieldRow('Hinge gap mm', this.gapInput)
+
     // Desktop uses the native File menu; the browser has none, so it gets an
     // in-page one at the top of the sidebar.
     const top: HTMLElement[] = this.opts.fileMenu ? [this.buildFileMenu()] : []
@@ -86,6 +106,9 @@ export class Controls {
       this.deEtchBtn,
       historyRow,
       label('Export'),
+      scaleRow,
+      gapRow,
+      this.exportHint,
       this.exportBtn,
       fileInput
     )
@@ -97,9 +120,61 @@ export class Controls {
 
   /** Export and saving are only meaningful once a model is loaded. */
   setModelLoaded(loaded: boolean): void {
-    this.exportBtn.disabled = !loaded
+    this.modelLoaded = loaded
+    this.updateExportEnabled()
     if (this.saveItem) this.saveItem.disabled = !loaded
     if (this.saveAsItem) this.saveAsItem.disabled = !loaded
+  }
+
+  /** Disable export while it runs (the geometry work can take several seconds). */
+  setExportBusy(busy: boolean): void {
+    this.exportBusy = busy
+    this.exportBtn.textContent = busy ? 'Exporting…' : 'Export STL…'
+    this.updateExportEnabled()
+  }
+
+  private updateExportEnabled(): void {
+    this.exportBtn.disabled = !this.modelLoaded || this.exportBusy
+  }
+
+  /** Reflect the project's export settings in the fields (after load / undo / redo). */
+  setExportSettings(scale: number, hingeGapMm: number | null): void {
+    this.scaleInput.value = String(Math.round(scale * 1000) / 10)
+    this.gapInput.value = hingeGapMm === null ? '' : String(hingeGapMm)
+  }
+
+  /** The template's measured hinge gap (shown as the default); `undefined` while measuring. */
+  setTemplateGap(gap: number | null | undefined): void {
+    this.templateGap = gap
+    this.gapInput.placeholder = gap ? gap.toFixed(2) : 'auto'
+    this.refreshHint()
+  }
+
+  /** Show the resulting outer size (mm) for the current scale. */
+  setSizeInfo(size: [number, number, number] | null, scale: number): void {
+    this.sizeText = size ? `${size.map((d) => (d * scale).toFixed(1)).join(' × ')} mm` : ''
+    this.refreshHint()
+  }
+
+  private refreshHint(): void {
+    const gap =
+      this.templateGap === undefined
+        ? 'measuring hinge gap…'
+        : this.templateGap === null
+          ? 'no hinge gap found'
+          : `blank gap = template (${this.templateGap.toFixed(2)} mm)`
+    this.exportHint.textContent = [this.sizeText && `Size ${this.sizeText}`, gap].filter(Boolean).join(' · ')
+  }
+
+  /** Validate both fields, normalize them, and report a change. */
+  private commitExportSettings(): void {
+    const pct = Number(this.scaleInput.value)
+    const scale = Number.isFinite(pct) && pct > 0 ? Math.min(MAX_EXPORT_SCALE, Math.max(MIN_EXPORT_SCALE, pct / 100)) : 1
+    const raw = this.gapInput.value.trim()
+    const g = Number(raw)
+    const gap = raw === '' || !Number.isFinite(g) || g <= 0 ? null : Math.min(2, Math.max(0.05, g))
+    this.setExportSettings(scale, gap)
+    this.cb.onExportSettingsChange(scale, gap)
   }
 
   /** Browser-only File menu: Open… / Save / Save As… (desktop uses the native menu). */
@@ -191,4 +266,22 @@ function label(text: string): HTMLElement {
   el.className = 'label'
   el.textContent = text
   return el
+}
+
+function numberInput(min: number, max: number, step: number): HTMLInputElement {
+  const el = document.createElement('input')
+  el.type = 'number'
+  el.min = String(min)
+  el.max = String(max)
+  el.step = String(step)
+  return el
+}
+
+function fieldRow(text: string, input: HTMLInputElement): HTMLElement {
+  const row = document.createElement('label')
+  row.className = 'field-row'
+  const name = document.createElement('span')
+  name.textContent = text
+  row.append(name, input)
+  return row
 }

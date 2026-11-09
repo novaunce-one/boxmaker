@@ -96,6 +96,11 @@ export class Viewer {
     this.fitCamera()
   }
 
+  /** The piece's mesh with de-etch fills applied (what cuts run on), or undefined. */
+  baseMesh(pieceId: number): IndexedMesh | undefined {
+    return this.pieces.get(pieceId)?.base
+  }
+
   setPreviewMode(mode: PreviewMode): void {
     this.previewMode = mode
   }

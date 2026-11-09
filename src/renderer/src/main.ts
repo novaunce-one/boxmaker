@@ -8,9 +8,11 @@ import { weldVertices, connectedComponents } from '@core/components'
 import { History } from '@core/history'
 import { applyProject } from '@core/engrave'
 import { prepareForExport } from '@core/export'
-import { MIN_CLEARANCE_MM } from '@core/types'
+import { applyExportScale, measureExactGap, scaleMeshes } from '@core/scale-export'
 import {
   EMPTY_PROJECT,
+  MIN_CLEARANCE_MM,
+  MIN_WALL_MM,
   cloneProjectState,
   type FacePlane,
   type ImageSource,
@@ -62,6 +64,9 @@ async function bootstrap(): Promise<void> {
   let templateFile: StlFile | null = null // embedded in saved projects
   let projectRef: ProjectRef | null = null
   let savedState: ProjectState = EMPTY_PROJECT // state at last open/save/load
+  let templateSize: [number, number, number] | null = null // outer size (mm) at 100%
+  /** Exact gap between the template's pieces: undefined = not measured yet, null = none. */
+  let templateGap: number | null | undefined
 
   const editor = new PlacementEditor(editorRoot, {
     onChange: (placements) => {
@@ -88,15 +93,27 @@ async function bootstrap(): Promise<void> {
   const applyState = (state: ProjectState): void => {
     viewer.renderPreview(state)
     controls.setHistoryState(history.canUndo, history.canRedo)
+    controls.setExportSettings(state.exportScale, state.hingeGapMm)
+    controls.setSizeInfo(templateSize, state.exportScale)
     updateTitle()
     // Keep an open editor in sync with undo/redo and external additions.
     const active = editor.activeFace
     if (active) {
+      // The wall limit must be measured on the mesh the cut runs on (with de-etch fills).
+      const base = viewer.baseMesh(active.pieceId)
+      if (base) editor.setWallMesh(base)
       const fw = state.faces.find(
         (f) => f.face.pieceId === active.pieceId && f.face.triangles[0] === active.triangles[0]
       )
       editor.setPlacements(fw ? fw.placements : [])
     }
+  }
+
+  /** Exact smallest gap between the template's pieces (null if it is a single piece / far apart). */
+  const measureTemplateGap = (): number | null => {
+    if (pieces.length < 2) return null
+    const { minGap } = measureExactGap(pieces, 2)
+    return Number.isFinite(minGap) ? minGap : null
   }
 
   /** Weld + split an STL file into pieces, show it, and reset the project. */
@@ -107,6 +124,15 @@ async function bootstrap(): Promise<void> {
     currentFace = null
     editor.close()
     templateFile = file
+    templateSize = boundsSize(pieces)
+    // Measure the template's real hinge gap once (the default export target).
+    templateGap = undefined
+    controls.setTemplateGap(undefined)
+    setTimeout(() => {
+      if (templateFile !== file) return // another model was loaded meanwhile
+      templateGap = measureTemplateGap()
+      controls.setTemplateGap(templateGap)
+    }, 0)
     projectRef = null // a fresh model is an untitled project
     controls.setFacePicked(false)
     controls.setModelLoaded(true)
@@ -212,7 +238,16 @@ async function bootstrap(): Promise<void> {
     onDeEtchModeChange: (on) => viewer.setDeEtchMode(on),
     onUndo: () => applyState(history.undo()),
     onRedo: () => applyState(history.redo()),
-    onExport: () => exportModel()
+    onExport: () => exportModel(),
+    onExportSettingsChange: (scale, hingeGapMm) => {
+      const cur = history.state
+      if (cur.exportScale === scale && cur.hingeGapMm === hingeGapMm) return
+      const next = cloneProjectState(cur)
+      next.exportScale = scale
+      next.hingeGapMm = hingeGapMm
+      history.push(next)
+      applyState(next)
+    }
   }, { fileMenu: !window.boxmaker })
 
   // Desktop: the native File menu (src/main/index.ts) drives these.
@@ -226,18 +261,46 @@ async function bootstrap(): Promise<void> {
     void saveProject(command === 'save-project-as')
   })
 
-  /** Assemble → repair → validate → save (desktop .stl / browser .zip). */
+  /** Assemble → scale + restore hinge gap → repair → validate → save (desktop .stl / browser .zip). */
   async function exportModel(): Promise<void> {
     if (pieces.length === 0) return
-    const { pieces: finalPieces, warnings: cutWarnings } = applyProject(pieces, history.state)
-    const result = prepareForExport(finalPieces, { minClearanceMm: MIN_CLEARANCE_MM, reference: pieces })
-    const notes = [...cutWarnings, ...result.warnings]
-    if (result.repaired.length) notes.unshift(`Repaired: ${result.repaired.join(', ')}.`)
-    if (notes.length) {
-      const proceed = window.confirm(`Export notes:\n\n${notes.join('\n')}\n\nSave anyway?`)
-      if (!proceed) return
+    const state = history.state
+    const scale = state.exportScale
+    controls.setExportBusy(true)
+    // Let the busy label paint: the geometry work below blocks the main thread.
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    let data: Uint8Array
+    try {
+      // Wall guard in template units so walls are still ≥ MIN_WALL_MM once scaled.
+      const { pieces: engraved, warnings: cutWarnings } = applyProject(pieces, state, MIN_WALL_MM / scale)
+
+      // Re-open joint gaps the scaling shrank: to the user's gap, else the template's own.
+      if (templateGap === undefined) templateGap = measureTemplateGap()
+      const enforce = scale !== 1 || state.hingeGapMm !== null
+      const target = enforce ? (state.hingeGapMm ?? templateGap ?? null) : null
+      const scaled = applyExportScale(engraved, scale, target)
+
+      const result = prepareForExport(scaled.pieces, {
+        minClearanceMm: MIN_CLEARANCE_MM,
+        reference: scale === 1 ? pieces : scaleMeshes(pieces, scale)
+      })
+      const notes = [...scaled.notes, ...cutWarnings, ...scaled.warnings, ...result.warnings]
+      if (scale < 0.7) {
+        notes.push('Below ~70%, hinge pins and thin walls shrink with the box and may print poorly.')
+      }
+      if (result.repaired.length) notes.unshift(`Repaired: ${result.repaired.join(', ')}.`)
+      if (notes.length) {
+        const proceed = window.confirm(`Export notes:\n\n${notes.join('\n')}\n\nSave anyway?`)
+        if (!proceed) return
+      }
+      data = new Uint8Array(result.stl)
+    } catch (err) {
+      console.error(err)
+      window.alert(`Export failed:\n\n${err instanceof Error ? err.message : String(err)}`)
+      return
+    } finally {
+      controls.setExportBusy(false)
     }
-    const data = new Uint8Array(result.stl)
     if (window.boxmaker) await window.boxmaker.saveStl('boxmaker.stl', data)
     else downloadZip('boxmaker.stl', data)
   }
@@ -248,7 +311,15 @@ async function bootstrap(): Promise<void> {
     const fw = history.state.faces.find(
       (f) => f.face.pieceId === face.pieceId && f.face.triangles[0] === face.triangles[0]
     )
-    if (piece) editor.open(face, piece.mesh, fw ? fw.placements : [], history.state.marginMm)
+    if (piece) {
+      editor.open(
+        face,
+        piece.mesh,
+        fw ? fw.placements : [],
+        history.state.marginMm,
+        viewer.baseMesh(face.pieceId) ?? piece.mesh
+      )
+    }
     controls.setFacePicked(true)
   }
 
@@ -309,6 +380,23 @@ async function bootstrap(): Promise<void> {
 }
 
 /** Find the FaceWork for `face` in `state`, creating it if absent. */
+/** Width × depth × height (mm) of all pieces' combined bounding box. */
+function boundsSize(pieces: MeshPiece[]): [number, number, number] | null {
+  const min = [Infinity, Infinity, Infinity]
+  const max = [-Infinity, -Infinity, -Infinity]
+  for (const p of pieces) {
+    const v = p.mesh.vertices
+    for (let i = 0; i < v.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        if (v[i + k] < min[k]) min[k] = v[i + k]
+        if (v[i + k] > max[k]) max[k] = v[i + k]
+      }
+    }
+  }
+  if (!Number.isFinite(min[0])) return null
+  return [max[0] - min[0], max[1] - min[1], max[2] - min[2]]
+}
+
 function faceWorkFor(state: ProjectState, face: FacePlane): ProjectState['faces'][number] {
   const existing = state.faces.find(
     (fw) => fw.face.pieceId === face.pieceId && fw.face.triangles[0] === face.triangles[0]

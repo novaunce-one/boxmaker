@@ -63,7 +63,10 @@ tsconfig.web.json / vitest.config.ts).
 threshold + marching-squares `traceContours` (`image-trace.ts`), the manifold cut pipeline
 `engraveFace`, the de-etch `smoothRegion`, the whole-model `applyProject`, and the
 wall-thickness raycast `wallThickness` (`engrave.ts`), undo/redo history (`history.ts`),
-export-time validation + repair (`validate.ts`, `repair.ts`, `export.ts`), and the
+export-time validation + repair (`validate.ts`, `repair.ts`, `export.ts`), the export-time
+uniform scale with hinge-gap restoration (`scale-export.ts`: `scaleMeshes`, exact
+`measureExactGap`, `restoreClearance` carving `piece − (neighbour ⊕ ball(gap))` so scaling
+never closes the print-in-place hinge), and the
 dependency-free STORED `.zip` writer + CRC-32 (`zip.ts`).
 
 `ui/`: `viewer.ts` (Three.js, OrbitControls, raycast face picking, overlay/cut preview,

@@ -134,9 +134,29 @@ export interface ProjectState {
   smoothed: SmoothWork[]
   /** Project-wide edge margin in mm. */
   marginMm: number
+  /**
+   * Uniform scale applied to the finished box at export (1 = original size).
+   * Hinge gaps shrink with it, so export re-opens them (see scale-export.ts).
+   */
+  exportScale: number
+  /**
+   * Minimum gap (mm) enforced between separate pieces after scaling. `null`
+   * means "match the template's own gap", which is known to print.
+   */
+  hingeGapMm: number | null
 }
 
-export const EMPTY_PROJECT: ProjectState = { faces: [], smoothed: [], marginMm: DEFAULT_MARGIN_MM }
+export const EMPTY_PROJECT: ProjectState = {
+  faces: [],
+  smoothed: [],
+  marginMm: DEFAULT_MARGIN_MM,
+  exportScale: 1,
+  hingeGapMm: null
+}
+
+/** Allowed export scale range (a fraction: 0.1 = 10%). */
+export const MIN_EXPORT_SCALE = 0.1
+export const MAX_EXPORT_SCALE = 4
 
 /** Which preview the 3D view shows (SPEC §2 FR-VIEW). */
 export type PreviewMode = 'overlay' | 'cut'
@@ -149,6 +169,8 @@ export type PreviewMode = 'overlay' | 'cut'
 export function cloneProjectState(s: ProjectState): ProjectState {
   return {
     marginMm: s.marginMm,
+    exportScale: s.exportScale,
+    hingeGapMm: s.hingeGapMm,
     faces: s.faces.map((fw) => ({
       face: fw.face,
       placements: fw.placements.map((p) => ({

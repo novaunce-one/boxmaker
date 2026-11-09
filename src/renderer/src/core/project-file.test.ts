@@ -6,7 +6,7 @@ import {
   type ImageDecoder,
   type ImageEncoder
 } from './project-file'
-import { DEFAULT_CUT, type FacePlane, type ImageSource, type MeshPiece, type ProjectState } from './types'
+import { DEFAULT_CUT, EMPTY_PROJECT, type FacePlane, type ImageSource, type MeshPiece, type ProjectState } from './types'
 
 // Fake pixel codec: no canvas needed in the Node test environment.
 const encode: ImageEncoder = async (img) => `${img.width}x${img.height}:${Array.from(img.rgba).join(',')}`
@@ -29,6 +29,8 @@ function sampleState(): { state: ProjectState; shared: ImageSource } {
   const shared: ImageSource = { width: 1, height: 2, rgba: new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255]) }
   const state: ProjectState = {
     marginMm: 3,
+    exportScale: 0.8,
+    hingeGapMm: 0.3,
     faces: [
       {
         face: face(),
@@ -53,6 +55,8 @@ describe('project file (FR-PROJECT)', () => {
     expect(back.templateName).toBe('box.stl')
     expect(Array.from(back.template)).toEqual(Array.from(template))
     expect(back.state.marginMm).toBe(3)
+    expect(back.state.exportScale).toBe(0.8)
+    expect(back.state.hingeGapMm).toBe(0.3)
     expect(back.state.faces[0].face).toEqual(state.faces[0].face)
     expect(back.state.faces[0].placements[0]).toMatchObject({
       center: [1, 2],
@@ -78,12 +82,26 @@ describe('project file (FR-PROJECT)', () => {
   it('handles large templates (base64 chunking)', async () => {
     const template = new Uint8Array(200_000).map((_, i) => i % 256)
     const text = await serializeProject(
-      { templateName: 't.stl', template, state: { marginMm: 2, faces: [], smoothed: [] } },
+      { templateName: 't.stl', template, state: { ...EMPTY_PROJECT } },
       encode
     )
     const back = await deserializeProject(text, decode)
     expect(back.template.length).toBe(template.length)
     expect(back.template[199_999]).toBe(template[199_999])
+  })
+
+  it('opens older projects without export settings at 100% / template gap', async () => {
+    const { state } = sampleState()
+    const text = await serializeProject({ templateName: 't.stl', template: new Uint8Array(4), state }, encode)
+    const legacy = JSON.parse(text)
+    delete legacy.state.exportScale
+    delete legacy.state.hingeGapMm
+    const back = await deserializeProject(JSON.stringify(legacy), decode)
+    expect(back.state.exportScale).toBe(1)
+    expect(back.state.hingeGapMm).toBeNull()
+
+    legacy.state.exportScale = 99
+    await expect(deserializeProject(JSON.stringify(legacy), decode)).rejects.toThrow(/scale/)
   })
 
   it('rejects files that are not projects or are the wrong version', async () => {

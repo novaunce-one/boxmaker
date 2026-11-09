@@ -1,7 +1,9 @@
 import { toBinaryMask } from '@core/image-trace'
+import { wallThickness } from '@core/engrave'
 import { maskToRgba } from './preview-overlay'
 import {
   DEFAULT_CUT,
+  MIN_WALL_MM,
   type FacePlane,
   type ImageSource,
   type IndexedMesh,
@@ -32,6 +34,8 @@ export interface EditorCallbacks {
 const SIZE_PX = 320 // editor canvas long edge
 const HANDLE = 7 // handle radius in px
 const ROT_ARM = 22 // rotate-handle distance above the box, px
+/** Depth slider ceiling when no wall can be measured under the image (nothing to cap against). */
+const UNMEASURED_MAX_DEPTH_MM = 5
 
 type Mode = { kind: 'drag' | 'rotate' } | { kind: 'resize'; corner: Vec2 }
 
@@ -51,6 +55,13 @@ export class PlacementEditor {
   private fields!: HTMLElement
   private active: Mode | null = null
 
+  // Wall-thickness lookup for the depth limit. Ray-casting the whole mesh is
+  // costly, so results are cached per placement geometry and never recomputed
+  // mid-drag (the last value is reused until the gesture ends).
+  private wallMesh: IndexedMesh | null = null
+  private wallCache = new Map<string, number>()
+  private lastWall = Infinity
+
   constructor(
     private readonly root: HTMLElement,
     private readonly cb: EditorCallbacks
@@ -58,16 +69,50 @@ export class PlacementEditor {
     this.build()
   }
 
-  /** Open the editor for a face, seeding a working copy of its placements. */
-  open(face: FacePlane, mesh: IndexedMesh, placements: Placement[], marginMm: number): void {
+  /**
+   * Open the editor for a face, seeding a working copy of its placements.
+   * `wallMesh` is the mesh the cut will actually run on (original + de-etch
+   * fills); it defaults to `mesh`.
+   */
+  open(
+    face: FacePlane,
+    mesh: IndexedMesh,
+    placements: Placement[],
+    marginMm: number,
+    wallMesh: IndexedMesh = mesh
+  ): void {
     this.face = face
     this.marginMm = marginMm
     this.placements = placements.map(clonePlacement)
+    this.setWallMesh(wallMesh)
     this.bbox = faceBBox(mesh, face)
     this.computeView()
     this.selected = this.placements.length ? this.placements.length - 1 : -1
     this.root.hidden = false
     this.render()
+  }
+
+  /** Update the mesh used to measure wall thickness (e.g. after a de-etch fill). */
+  setWallMesh(mesh: IndexedMesh): void {
+    if (mesh === this.wallMesh) return
+    this.wallMesh = mesh
+    this.wallCache.clear()
+  }
+
+  /**
+   * Smallest wall thickness under `pl` (Infinity if unmeasurable). Cached; during
+   * a drag/resize/rotate gesture the previous value is returned instead of
+   * re-casting rays on every pointer move.
+   */
+  private wallFor(pl: Placement): number {
+    const key = [pl.center[0], pl.center[1], pl.size[0], pl.size[1], pl.rotation].map((n) => n.toFixed(3)).join('|')
+    const cached = this.wallCache.get(key)
+    if (cached !== undefined) return (this.lastWall = cached)
+    if (this.active || !this.wallMesh || !this.face) return this.lastWall
+    const wall = wallThickness(this.wallMesh, this.face, pl)
+    if (this.wallCache.size > 200) this.wallCache.clear()
+    this.wallCache.set(key, wall)
+    return (this.lastWall = wall)
   }
 
   /** Refresh placements without emitting onChange (undo/redo, external add). */
@@ -247,7 +292,7 @@ export class PlacementEditor {
       numField('Center v (mm)', pl.center[1], commitNum((v) => (pl.center = [pl.center[0], v]))),
       numField('Width (mm)', pl.size[0], commitNum((v) => (pl.size = [Math.max(0.1, v), Math.max(0.1, v) / aspect]))),
       numField('Rotation (°)', (pl.rotation * 180) / Math.PI, commitNum((v) => (pl.rotation = (v * Math.PI) / 180))),
-      numField('Depth (mm)', pl.cut.depth, commitNum((v) => (pl.cut.depth = Math.max(0, v)))),
+      this.depthControl(pl),
       numField('Threshold', pl.cut.threshold, commitNum((v) => (pl.cut.threshold = clamp(v, 0, 255)))),
       numField('Smoothing (mm)', pl.cut.smoothing, commitNum((v) => (pl.cut.smoothing = Math.max(0, v)))),
       boolField('Invert', pl.cut.invert, (b) => {
@@ -256,6 +301,88 @@ export class PlacementEditor {
         this.commit()
       })
     )
+  }
+
+  /**
+   * Depth slider + number + "Max", limited to what the wall allows: the measured
+   * wall under the image minus MIN_WALL_MM, so the cut can never go through
+   * (FR-HINGE-3, FR-CUT-3). Entry is clamped to that limit; moving the image
+   * onto a thinner spot leaves the stored depth alone but the note says what will
+   * actually be cut (the engraver applies the same cap).
+   */
+  private depthControl(pl: Placement): HTMLElement {
+    const wall = this.wallFor(pl)
+    const measured = Number.isFinite(wall)
+    const maxDepth = measured ? Math.max(0, Math.floor((wall - MIN_WALL_MM) * 100) / 100) : UNMEASURED_MAX_DEPTH_MM
+
+    const wrap = document.createElement('div')
+    wrap.className = 'editor-depth'
+    const title = document.createElement('div')
+    title.className = 'editor-depth-title'
+    title.textContent = 'Depth (mm)'
+
+    const slider = document.createElement('input')
+    slider.type = 'range'
+    slider.min = '0'
+    slider.max = String(maxDepth)
+    slider.step = '0.01'
+    slider.value = String(Math.min(pl.cut.depth, maxDepth))
+    slider.disabled = maxDepth <= 0
+
+    const num = document.createElement('input')
+    num.type = 'number'
+    num.min = '0'
+    num.max = String(maxDepth)
+    num.step = 'any'
+    num.value = String(round(pl.cut.depth))
+
+    const maxBtn = document.createElement('button')
+    maxBtn.textContent = 'Max'
+    maxBtn.title = 'Cut as deep as the wall safely allows'
+    maxBtn.disabled = maxDepth <= 0
+
+    const note = document.createElement('div')
+    note.className = 'editor-note'
+    const refreshNote = (): void => {
+      const over = pl.cut.depth > maxDepth + 1e-6
+      note.classList.toggle('warn', over || (measured && maxDepth <= 0))
+      if (measured && maxDepth <= 0) {
+        note.textContent = `Wall here is ${wall.toFixed(2)} mm — too thin to cut (must leave ${MIN_WALL_MM} mm).`
+      } else if (!measured) {
+        note.textContent = 'No wall measured under this image; depth is not limited.'
+      } else {
+        note.textContent =
+          `Wall here ${wall.toFixed(2)} mm · max depth ${maxDepth.toFixed(2)} mm (leaves ${MIN_WALL_MM} mm).` +
+          (over ? ` Will be cut at ${maxDepth.toFixed(2)} mm.` : '')
+      }
+    }
+    refreshNote()
+
+    // Live while scrubbing; one undo entry when released.
+    slider.addEventListener('input', () => {
+      pl.cut.depth = Number(slider.value)
+      num.value = String(round(pl.cut.depth))
+      refreshNote()
+    })
+    slider.addEventListener('change', () => this.commit())
+    num.addEventListener('change', () => {
+      const v = Number(num.value)
+      if (!Number.isFinite(v)) return
+      pl.cut.depth = clamp(v, 0, maxDepth)
+      this.render()
+      this.commit()
+    })
+    maxBtn.addEventListener('click', () => {
+      pl.cut.depth = maxDepth
+      this.render()
+      this.commit()
+    })
+
+    const row = document.createElement('div')
+    row.className = 'editor-depth-row'
+    row.append(slider, num, maxBtn)
+    wrap.append(title, row, note)
+    return wrap
   }
 
   // --- interaction --------------------------------------------------------

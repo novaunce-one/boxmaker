@@ -93,6 +93,12 @@ damaging the print-in-place hinge.
   (bool), depth (mm), and edge smoothing (mm). Defaults: threshold 128, invert
   off, depth **0.6 mm**, smoothing 0.1 mm (`OQ-3`).
 - **FR-CUT-2** Edge margin MUST be adjustable per project; default **2 mm** (`OQ-3`).
+- **FR-CUT-3** The depth control (slider + number + **Max**) MUST be limited to
+  the measured wall thickness under the image minus `MIN_WALL_MM`, so an
+  engraving can never go through the face. It MUST show the wall thickness and
+  the resulting maximum, clamp typed/slider values to it, and — if the stored
+  depth exceeds the limit at the current position — state the depth that will
+  actually be cut (the engraver applies the same cap, `WARN-DEPTH`).
 
 ### 2.6 Piece splitting / hinge protection (`FR-HINGE`)
 - **FR-HINGE-1** The template MUST be split into connected components by welding
@@ -251,6 +257,32 @@ For an imported box that already carries engraving:
 - **FR-PROJECT-6** Desktop: the renderer MAY only silently overwrite paths the
   user previously chose in a native dialog (NFR-SEC-1). Browser: use the File
   System Access API where available, else fall back to a download.
+- **FR-PROJECT-7** `ProjectState` carries `exportScale` and `hingeGapMm`; project
+  files written before they existed MUST open at 100% / "match template".
+
+### 2.17 Export scale & hinge-gap restoration (`FR-SCALE`)
+- **FR-SCALE-1** The user MUST be able to set a uniform export scale (10–400%,
+  default 100%). It applies to the finished, engraved box at export only (image
+  mm sizes and cut depth scale with it); the preview stays at template size. The
+  setting is part of the undoable/saved project and the UI shows the resulting
+  outer size.
+- **FR-SCALE-2** Scaling is about the model's minimum corner (the box stays on
+  the bed). At exactly 100% with no gap override, export MUST be byte-identical
+  to the unscaled pipeline.
+- **FR-SCALE-3** After scaling, every pair of pieces closer than the target gap
+  MUST be re-opened to at least the target by carving the bulkier piece
+  (`piece − (neighbour ⊕ ball(target))`, restricted to the neighbour's part near
+  the piece). Pieces already far enough apart (including any scale-up) MUST NOT
+  be modified.
+- **FR-SCALE-4** The target gap is the user's "Hinge gap" override, else the
+  template's own exact surface-to-surface gap (`measureExactGap`, manifold
+  `minGap`), which is known to print. The achieved gap MUST be re-measured; if it
+  is still below target, export warns.
+- **FR-SCALE-5** The wall-thickness guard MUST run in template units with
+  `MIN_WALL_MM / scale`, so scaled walls keep ≥ `MIN_WALL_MM`. Export MUST note
+  that pins and walls shrink with the box below ~70%.
+- **FR-SCALE-6** Export shows a busy state while the geometry work runs (several
+  seconds on the real template when a carve is needed).
 
 ---
 

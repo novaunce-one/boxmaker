@@ -47,12 +47,13 @@ export class Controls {
 
   render(): void {
     const loadBtn = document.createElement('button')
+    loadBtn.className = 'primary'
     loadBtn.textContent = 'Load template STL'
     loadBtn.addEventListener('click', () => void this.cb.onLoadTemplate())
 
-    // Preview-mode toggle: Overlay | Cut.
+    // Preview-mode toggle: Overlay | Cut (a macOS segmented control).
     const modeRow = document.createElement('div')
-    modeRow.className = 'row'
+    modeRow.className = 'row seg'
     this.overlayBtn = this.makeButton('Overlay', () => this.selectMode('overlay'))
     this.cutBtn = this.makeButton('Cut', () => this.selectMode('cut'))
     modeRow.append(this.overlayBtn, this.cutBtn)
@@ -80,6 +81,7 @@ export class Controls {
 
     // Export: assemble, repair, validate, and save (.stl desktop / .zip web).
     this.exportBtn = this.makeButton('Export STL…', () => void this.cb.onExport())
+    this.exportBtn.classList.add('primary')
 
     // Uniform scale applied at export; hinge gaps are re-opened afterwards.
     this.scaleInput = numberInput(MIN_EXPORT_SCALE * 100, MAX_EXPORT_SCALE * 100, 1)

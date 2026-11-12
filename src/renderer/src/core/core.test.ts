@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { parseBinaryStl, writeBinaryStl } from './stl'
 import { weldVertices, connectedComponents } from './components'
-import { faceBasis } from './faces'
+import { faceBasis, detectFace, sameFace } from './faces'
 import { toBinaryMask } from './image-trace'
-import type { ImageSource, TriangleMesh } from './types'
+import type { ImageSource, IndexedMesh, TriangleMesh } from './types'
 
 /** Build a binary STL buffer from a flat positions array (triangleCount*9). */
 function stlFromPositions(positions: number[]): ArrayBuffer {
@@ -60,6 +60,39 @@ describe('face basis', () => {
       expect(cross[1]).toBeCloseTo(n[1], 5)
       expect(cross[2]).toBeCloseTo(n[2], 5)
     }
+  })
+})
+
+describe('face identity (sameFace)', () => {
+  // A cube's top (+Z) face is two triangles (indices 2 and 3), so it can be
+  // seeded from either — standing in for the user clicking different spots.
+  function cube(s = 20): IndexedMesh {
+    const v = [0, 0, 0, s, 0, 0, s, s, 0, 0, s, 0, 0, 0, s, s, 0, s, s, s, s, 0, s, s]
+    const quads = [
+      [0, 1, 2, 3],
+      [4, 7, 6, 5],
+      [0, 4, 5, 1],
+      [1, 5, 6, 2],
+      [2, 6, 7, 3],
+      [3, 7, 4, 0]
+    ]
+    const idx: number[] = []
+    for (const [a, b, c, d] of quads) idx.push(a, b, c, a, c, d)
+    return { vertices: new Float32Array(v), indices: new Uint32Array(idx) }
+  }
+
+  it('matches the same face no matter which triangle seeds the flood fill', () => {
+    const m = cube()
+    const seededAt2 = detectFace(m, 2, 0) // top face, seeded at tri 2
+    const seededAt3 = detectFace(m, 3, 0) // same top face, seeded at tri 3
+    // The old identity (triangles[0]) was the seed, so it disagreed…
+    expect(seededAt2.triangles[0]).not.toBe(seededAt3.triangles[0])
+    // …but the two clicks resolve to the same face — the fix that lets
+    // re-picking (and reopening a project) find a face's saved placements.
+    expect(sameFace(seededAt2, seededAt3)).toBe(true)
+    // A different face (a side) must NOT match the top.
+    const side = detectFace(m, 4, 0) // a −Y side-face triangle
+    expect(sameFace(seededAt2, side)).toBe(false)
   })
 })
 

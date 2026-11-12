@@ -5,6 +5,7 @@ import { PlacementEditor, createCenteredPlacement } from '@ui/placement-editor'
 import { initManifold } from '@core/manifold'
 import { parseBinaryStl } from '@core/stl'
 import { weldVertices, connectedComponents } from '@core/components'
+import { sameFace } from '@core/faces'
 import { History } from '@core/history'
 import { applyProject } from '@core/engrave'
 import { prepareForExport } from '@core/export'
@@ -104,9 +105,7 @@ async function bootstrap(): Promise<void> {
       const base = viewer.baseMesh(active.pieceId)
       if (base) editor.setWallMesh(base)
       editor.setNeighbours(otherMeshes(active.pieceId))
-      const fw = state.faces.find(
-        (f) => f.face.pieceId === active.pieceId && f.face.triangles[0] === active.triangles[0]
-      )
+      const fw = state.faces.find((f) => sameFace(f.face, active))
       editor.setPlacements(fw ? fw.placements : [])
     }
   }
@@ -310,12 +309,15 @@ async function bootstrap(): Promise<void> {
     else downloadZip('boxmaker.stl', data)
   }
 
-  viewer.onPickFace = (face) => {
+  viewer.onPickFace = (picked) => {
+    const piece = pieces.find((p) => p.id === picked.pieceId)
+    const fw = history.state.faces.find((f) => sameFace(f.face, picked))
+    // A face's origin is the centroid of the clicked (seed) triangle, so picking
+    // the same face at a different spot yields a shifted frame. Editing saved
+    // placements in that shifted frame would move them to the click point. When
+    // the face already has work, reuse its stored frame so positions are kept.
+    const face = fw ? fw.face : picked
     currentFace = face
-    const piece = pieces.find((p) => p.id === face.pieceId)
-    const fw = history.state.faces.find(
-      (f) => f.face.pieceId === face.pieceId && f.face.triangles[0] === face.triangles[0]
-    )
     if (piece) {
       editor.setNeighbours(otherMeshes(face.pieceId))
       editor.open(
@@ -349,9 +351,13 @@ async function bootstrap(): Promise<void> {
   viewer.start()
 
   // Browser build: restore the last-loaded template from IndexedDB (FR-LOAD-2).
+  // Guard against clobbering: if the user already loaded a template or opened a
+  // project before this async read resolves, do NOT overwrite their state.
   if (!window.boxmaker) {
     loadLastTemplate()
-      .then((file) => file && loadModel(file))
+      .then((file) => {
+        if (file && templateFile === null) loadModel(file)
+      })
       .catch((err) => console.warn('template restore failed:', err))
   }
 
@@ -404,9 +410,7 @@ function boundsSize(pieces: MeshPiece[]): [number, number, number] | null {
 }
 
 function faceWorkFor(state: ProjectState, face: FacePlane): ProjectState['faces'][number] {
-  const existing = state.faces.find(
-    (fw) => fw.face.pieceId === face.pieceId && fw.face.triangles[0] === face.triangles[0]
-  )
+  const existing = state.faces.find((fw) => sameFace(fw.face, face))
   if (existing) return existing
   const fw = { face, placements: [] }
   state.faces.push(fw)
@@ -415,9 +419,7 @@ function faceWorkFor(state: ProjectState, face: FacePlane): ProjectState['faces'
 
 /** Find the SmoothWork for `face` in `state`, creating it if absent. */
 function smoothWorkFor(state: ProjectState, face: FacePlane): ProjectState['smoothed'][number] {
-  const existing = state.smoothed.find(
-    (sw) => sw.face.pieceId === face.pieceId && sw.face.triangles[0] === face.triangles[0]
-  )
+  const existing = state.smoothed.find((sw) => sameFace(sw.face, face))
   if (existing) return existing
   const sw = { face, rects: [] }
   state.smoothed.push(sw)

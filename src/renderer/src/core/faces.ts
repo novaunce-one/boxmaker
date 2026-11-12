@@ -100,6 +100,29 @@ export function detectFace(
 }
 
 /**
+ * Whether two FacePlanes denote the same coplanar face. `detectFace` seeds its
+ * flood fill at the clicked triangle, so the resulting `triangles` array — and
+ * especially `triangles[0]` — depends on *where* the user clicked. Matching on
+ * `triangles[0]` therefore fails to re-find a face's saved placements after a
+ * second click or after reopening a project (the classic "the overlay is there
+ * but the editor opens empty" bug).
+ *
+ * Two faces are the same iff they belong to the same piece and their triangle
+ * sets overlap: distinct coplanar faces never share a triangle, while any two
+ * clicks on one face yield overlapping (indeed, usually identical) sets. This is
+ * robust even when the tolerance-based flood fill returns slightly different
+ * sets for different seeds on a non-planar-ish face.
+ */
+export function sameFace(
+  a: Pick<FacePlane, 'pieceId' | 'triangles'>,
+  b: Pick<FacePlane, 'pieceId' | 'triangles'>
+): boolean {
+  if (a.pieceId !== b.pieceId) return false
+  const set = new Set(a.triangles)
+  return b.triangles.some((t) => set.has(t))
+}
+
+/**
  * Find a triangle of `mesh` lying in the plane through `point` with normal
  * `normal` (either orientation), preferring one that contains the point and
  * otherwise the one whose centroid is nearest. Returns -1 if none is coplanar.

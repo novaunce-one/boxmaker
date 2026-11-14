@@ -16,6 +16,54 @@ export interface BinaryMask {
   bits: Uint8Array
 }
 
+/**
+ * Crop an image to the bounding box of its artwork — pixels that are both cut
+ * (per `cut`) and not transparent — trimming the empty white/transparent margin
+ * around e.g. a logo. This makes a placement's size (and therefore the editor's
+ * bounding box and its drag limits) match the visible image instead of the
+ * original canvas. Returns the image unchanged when it has no content or already
+ * fills the frame. `padPx` leaves a thin border so edge strokes aren't clipped.
+ */
+export function trimToContent(
+  image: ImageSource,
+  cut: Pick<CutSettings, 'threshold' | 'invert'>,
+  padPx = 1
+): ImageSource {
+  const { width, height, rgba } = image
+  let minX = width,
+    minY = height,
+    maxX = -1,
+    maxY = -1
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const p = (y * width + x) * 4
+      const lum = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2]
+      let cutHere = lum < cut.threshold
+      if (cut.invert) cutHere = !cutHere
+      if (cutHere && rgba[p + 3] > 16) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return image // nothing would be cut — keep as-is
+  minX = Math.max(0, minX - padPx)
+  minY = Math.max(0, minY - padPx)
+  maxX = Math.min(width - 1, maxX + padPx)
+  maxY = Math.min(height - 1, maxY + padPx)
+  const cw = maxX - minX + 1
+  const ch = maxY - minY + 1
+  if (cw === width && ch === height) return image // already tight
+  const out = new Uint8ClampedArray(cw * ch * 4)
+  for (let y = 0; y < ch; y++) {
+    const srcStart = ((minY + y) * width + minX) * 4
+    out.set(rgba.subarray(srcStart, srcStart + cw * 4), y * cw * 4)
+  }
+  return { width: cw, height: ch, rgba: out }
+}
+
 /** Grayscale + threshold (+ optional invert) → binary mask, with downscaling. */
 export function toBinaryMask(
   image: ImageSource,

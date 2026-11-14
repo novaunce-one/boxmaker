@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { buildField, gaussianBlur, previewContours, traceSmoothContours, type Contour } from './image-trace'
+import {
+  buildField,
+  gaussianBlur,
+  previewContours,
+  traceSmoothContours,
+  trimToContent,
+  type Contour
+} from './image-trace'
 import { DEFAULT_CUT, type ImageSource, type Placement } from './types'
 
 /** Opaque grayscale image from a per-pixel luminance function. */
@@ -43,6 +50,31 @@ function radialRoughness(rings: Contour[], size: [number, number]): number {
   const mean = r.reduce((s, v) => s + v, 0) / r.length
   return Math.sqrt(r.reduce((s, v) => s + (v - mean) ** 2, 0) / r.length)
 }
+
+describe('trimToContent', () => {
+  // A 6×6 black square (luma 0, cut) centred in a 20×20 white (luma 255) canvas.
+  const padded = image(20, 20, (x, y) => (x >= 7 && x < 13 && y >= 7 && y < 13 ? 0 : 255))
+
+  it('crops the empty margin to the artwork bounds', () => {
+    const t = trimToContent(padded, DEFAULT_CUT, 0)
+    expect([t.width, t.height]).toEqual([6, 6])
+  })
+
+  it('keeps a thin padding border when asked', () => {
+    const t = trimToContent(padded, DEFAULT_CUT, 1)
+    expect([t.width, t.height]).toEqual([8, 8])
+  })
+
+  it('returns the image unchanged when nothing would be cut', () => {
+    const blank = image(10, 10, () => 255) // all white → no cut pixels
+    expect(trimToContent(blank, DEFAULT_CUT)).toBe(blank)
+  })
+
+  it('leaves an already-tight image alone', () => {
+    const solid = image(8, 8, () => 0) // all cut → fills the frame
+    expect(trimToContent(solid, DEFAULT_CUT)).toBe(solid)
+  })
+})
 
 describe('traceSmoothContours (FR-IMG-5)', () => {
   it('traces a solid block to about its true area', () => {

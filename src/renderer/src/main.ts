@@ -6,11 +6,13 @@ import { initManifold } from '@core/manifold'
 import { parseBinaryStl } from '@core/stl'
 import { weldVertices, connectedComponents } from '@core/components'
 import { sameFace } from '@core/faces'
+import { trimToContent } from '@core/image-trace'
 import { History } from '@core/history'
 import { applyProject } from '@core/engrave'
 import { prepareForExport } from '@core/export'
 import { applyExportScale, measureExactGap, scaleMeshes } from '@core/scale-export'
 import {
+  DEFAULT_CUT,
   EMPTY_PROJECT,
   MIN_CLEARANCE_MM,
   MIN_WALL_MM,
@@ -433,7 +435,7 @@ async function loadTemplate(): Promise<StlFile | null> {
   return { name, data: new Uint8Array(buffer) }
 }
 
-/** Decode an image file to raw RGBA pixels. */
+/** Decode an image file to raw RGBA pixels, trimmed to its artwork bounds. */
 async function decodeImage(file: File): Promise<ImageSource> {
   const bmp = await createImageBitmap(file)
   const canvas = document.createElement('canvas')
@@ -442,7 +444,8 @@ async function decodeImage(file: File): Promise<ImageSource> {
   const ctx = canvas.getContext('2d')!
   ctx.drawImage(bmp, 0, 0)
   const { data } = ctx.getImageData(0, 0, bmp.width, bmp.height)
-  return { width: bmp.width, height: bmp.height, rgba: data }
+  // Crop the empty margin so the placement box matches the visible image.
+  return trimToContent({ width: bmp.width, height: bmp.height, rgba: data }, DEFAULT_CUT)
 }
 
 bootstrap().catch((err) => {

@@ -2,6 +2,8 @@ import './assets/main.css'
 import { Viewer } from '@ui/viewer'
 import { Controls } from '@ui/controls'
 import { PlacementEditor, createCenteredPlacement } from '@ui/placement-editor'
+import { createTextPlacement } from '@ui/text-image'
+import { FontRegistry } from '@ui/fonts'
 import { initManifold } from '@core/manifold'
 import { parseBinaryStl } from '@core/stl'
 import { weldVertices, connectedComponents } from '@core/components'
@@ -13,6 +15,7 @@ import { prepareForExport } from '@core/export'
 import { applyExportScale, measureExactGap, scaleMeshes } from '@core/scale-export'
 import {
   DEFAULT_CUT,
+  DEFAULT_TEXT,
   EMPTY_PROJECT,
   MIN_CLEARANCE_MM,
   MIN_WALL_MM,
@@ -62,6 +65,7 @@ async function bootstrap(): Promise<void> {
 
   const viewer = new Viewer(viewport)
   const history = new History<ProjectState>(EMPTY_PROJECT)
+  const fontRegistry = new FontRegistry()
 
   let pieces: MeshPiece[] = []
   let currentFace: FacePlane | null = null
@@ -79,7 +83,9 @@ async function bootstrap(): Promise<void> {
       faceWorkFor(next, currentFace).placements = placements
       history.push(next)
       applyState(next)
-    }
+    },
+    listFonts: () => fontRegistry.list(),
+    uploadFont: () => fontRegistry.upload()
   })
 
   const isDirty = (): boolean => templateFile !== null && history.state !== savedState
@@ -153,7 +159,12 @@ async function bootstrap(): Promise<void> {
     try {
       const snapshot = history.state // what we save is what we mark clean
       const text = await serializeProject(
-        { templateName: templateFile.name, template: templateFile.data, state: snapshot },
+        {
+          templateName: templateFile.name,
+          template: templateFile.data,
+          state: snapshot,
+          fonts: fontRegistry.serialize()
+        },
         encodeImagePng
       )
       const data = new TextEncoder().encode(text)
@@ -195,6 +206,8 @@ async function bootstrap(): Promise<void> {
         ref = { name: file.name, handle: file.handle }
       }
       const doc = await deserializeProject(new TextDecoder().decode(bytes), decodeImagePng)
+      // Register embedded fonts so text placements can be re-edited with them.
+      await fontRegistry.register(doc.fonts)
       const template: StlFile = { name: doc.templateName, data: doc.template }
       loadModel(template)
       if (!window.boxmaker) void saveLastTemplate(template)
@@ -236,6 +249,15 @@ async function bootstrap(): Promise<void> {
       faceWorkFor(next, currentFace).placements.push(createCenteredPlacement(image))
       history.push(next)
       applyState(next)
+      editor.selectLast()
+    },
+    onAddText: () => {
+      if (!currentFace) return
+      const next = cloneProjectState(history.state)
+      faceWorkFor(next, currentFace).placements.push(createTextPlacement(DEFAULT_TEXT))
+      history.push(next)
+      applyState(next)
+      editor.selectLast() // open the new text's fields for immediate editing
     },
     onPreviewModeChange: (mode) => {
       viewer.setPreviewMode(mode)

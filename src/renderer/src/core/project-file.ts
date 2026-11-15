@@ -6,8 +6,10 @@ import {
   type FacePlane,
   type ImageSource,
   type MeshPiece,
+  type Placement,
   type ProjectState,
   type Rect2,
+  type TextSpec,
   type Vec2,
   type Vec3
 } from './types'
@@ -35,6 +37,14 @@ export interface ProjectDocument {
   /** Binary STL bytes of the template. */
   template: Uint8Array
   state: ProjectState
+  /** Uploaded fonts used by text placements, embedded so the project is portable. */
+  fonts?: ProjectFont[]
+}
+
+/** An embedded custom font: family name + the raw font-file bytes. */
+export interface ProjectFont {
+  family: string
+  data: Uint8Array
 }
 
 /** Encode an image's pixels to a string (e.g. a PNG data URL). */
@@ -65,7 +75,8 @@ export async function serializeProject(doc: ProjectDocument, encode: ImageEncode
         size: [pl.size[0], pl.size[1]],
         rotation: pl.rotation,
         cut: { ...pl.cut },
-        image: await imageId(pl.image)
+        image: await imageId(pl.image),
+        ...(pl.text ? { text: { ...pl.text } } : {})
       })
     }
     faces.push({ face: faceToJson(fw.face), placements })
@@ -81,6 +92,7 @@ export async function serializeProject(doc: ProjectDocument, encode: ImageEncode
     version: PROJECT_VERSION,
     template: { name: doc.templateName, data: toBase64(doc.template) },
     images,
+    fonts: (doc.fonts ?? []).map((f) => ({ family: f.family, data: toBase64(f.data) })),
     state: {
       marginMm: doc.state.marginMm,
       exportScale: doc.state.exportScale,
@@ -114,22 +126,33 @@ export async function deserializeProject(text: string, decode: ImageDecoder): Pr
   const images: ImageSource[] = []
   for (const enc of encodedImages) images.push(await decode(str(enc, 'image')))
 
+  // Embedded fonts are optional (added after v1 shipped): older files have none.
+  const fonts: ProjectFont[] =
+    doc.fonts === undefined
+      ? []
+      : arr(doc.fonts, 'fonts').map((f) => {
+          const rf = rec(f, 'font')
+          return { family: str(rf.family, 'font family'), data: fromBase64(str(rf.data, 'font data')) }
+        })
+
   const st = rec(doc.state, 'state')
   const faces = arr(st.faces, 'faces').map((f) => {
     const fw = rec(f, 'face entry')
     return {
       face: faceFromJson(fw.face),
-      placements: arr(fw.placements, 'placements').map((p) => {
+      placements: arr(fw.placements, 'placements').map((p): Placement => {
         const pl = rec(p, 'placement')
         const image = images[num(pl.image, 'image id')]
         if (!image) throw new Error('Project refers to a missing image.')
-        return {
+        const placement: Placement = {
           center: vec2(pl.center, 'center'),
           size: vec2(pl.size, 'size'),
           rotation: num(pl.rotation, 'rotation'),
           image,
           cut: cutFromJson(pl.cut)
         }
+        if (pl.text !== undefined) placement.text = textFromJson(pl.text)
+        return placement
       })
     }
   })
@@ -156,6 +179,7 @@ export async function deserializeProject(text: string, decode: ImageDecoder): Pr
   return {
     templateName,
     template,
+    fonts,
     state: { marginMm: num(st.marginMm, 'margin'), exportScale, hingeGapMm, faces, smoothed }
   }
 }
@@ -199,6 +223,16 @@ function faceFromJson(x: unknown): FacePlane {
     v: vec3(f.v, 'v'),
     triangles: arr(f.triangles, 'triangles').map((t) => num(t, 'triangle')),
     pieceId: num(f.pieceId, 'pieceId')
+  }
+}
+
+function textFromJson(x: unknown): TextSpec {
+  const t = rec(x, 'text')
+  return {
+    content: str(t.content, 'text content'),
+    fontFamily: str(t.fontFamily, 'font family'),
+    fontSizeMm: num(t.fontSizeMm, 'font size'),
+    thicknessMm: num(t.thicknessMm, 'thickness')
   }
 }
 

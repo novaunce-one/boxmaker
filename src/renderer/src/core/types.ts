@@ -61,6 +61,12 @@ export interface Placement {
   rotation: number
   image: ImageSource
   cut: CutSettings
+  /**
+   * When set, `image` was rendered from this text spec (not imported from a
+   * file). Keeping the spec lets the editor re-render on font/size/thickness
+   * changes; the engrave pipeline still only reads `image` + `cut`.
+   */
+  text?: TextSpec
 }
 
 /** Decoded image pixels plus the controls that turn them into a binary mask. */
@@ -69,6 +75,38 @@ export interface ImageSource {
   height: number
   /** RGBA, length `width * height * 4`. */
   rgba: Uint8ClampedArray
+}
+
+/** A single line of text rendered to a placement's image. */
+export interface TextSpec {
+  /** The text (single line in v1). */
+  content: string
+  /** Built-in family name or an uploaded font's family. */
+  fontFamily: string
+  /** Glyph/line height in mm. */
+  fontSizeMm: number
+  /** Extra stroke weight added to the glyphs in mm (0 = none) — thickens thin fonts. */
+  thicknessMm: number
+}
+
+/** Common fonts present on both macOS and Windows (the built-in picker list). */
+export const BUILTIN_FONTS: readonly string[] = [
+  'Arial',
+  'Helvetica',
+  'Times New Roman',
+  'Georgia',
+  'Courier New',
+  'Verdana',
+  'Trebuchet MS',
+  'Impact'
+]
+
+/** Defaults for a freshly added text overlay. */
+export const DEFAULT_TEXT: TextSpec = {
+  content: 'Text',
+  fontFamily: BUILTIN_FONTS[0],
+  fontSizeMm: 8,
+  thicknessMm: 0
 }
 
 /** `etch` cuts the image into the surface; `emboss` raises it above the surface. */
@@ -197,7 +235,8 @@ export function cloneProjectState(s: ProjectState): ProjectState {
         size: [p.size[0], p.size[1]] as Vec2,
         rotation: p.rotation,
         image: p.image,
-        cut: { ...p.cut }
+        cut: { ...p.cut },
+        ...(p.text ? { text: { ...p.text } } : {})
       }))
     })),
     smoothed: s.smoothed.map((sw) => ({

@@ -69,6 +69,37 @@ describe('project file (FR-PROJECT)', () => {
     expect(back.state.smoothed[0].face.pieceId).toBe(1)
   })
 
+  it('round-trips a text placement and embedded fonts', async () => {
+    const { state } = sampleState()
+    state.faces[0].placements.push({
+      center: [0, 0],
+      size: [10, 4],
+      rotation: 0,
+      image: { width: 1, height: 1, rgba: new Uint8ClampedArray([0, 0, 0, 255]) },
+      cut: { ...DEFAULT_CUT },
+      text: { content: 'Hi', fontFamily: 'Arial', fontSizeMm: 8, thicknessMm: 0.3 }
+    })
+    const fonts = [{ family: 'MyFont', data: new Uint8Array([1, 2, 3, 4, 250]) }]
+    const text = await serializeProject({ templateName: 't.stl', template: new Uint8Array(4), state, fonts }, encode)
+    const back = await deserializeProject(text, decode)
+
+    const tp = back.state.faces[0].placements.find((p) => p.text)
+    expect(tp?.text).toEqual({ content: 'Hi', fontFamily: 'Arial', fontSizeMm: 8, thicknessMm: 0.3 })
+    expect(back.fonts).toHaveLength(1)
+    expect(back.fonts?.[0].family).toBe('MyFont')
+    expect(Array.from(back.fonts?.[0].data ?? [])).toEqual([1, 2, 3, 4, 250])
+  })
+
+  it('loads projects with no fonts array as empty, placements without text', async () => {
+    const { state } = sampleState()
+    const txt = await serializeProject({ templateName: 't.stl', template: new Uint8Array(4), state }, encode)
+    const legacy = JSON.parse(txt)
+    delete legacy.fonts
+    const back = await deserializeProject(JSON.stringify(legacy), decode)
+    expect(back.fonts).toEqual([])
+    expect(back.state.faces[0].placements[0].text).toBeUndefined()
+  })
+
   it('stores a shared image once and keeps it shared after loading', async () => {
     const { state, shared } = sampleState()
     const text = await serializeProject({ templateName: 't.stl', template: new Uint8Array(4), state }, encode)

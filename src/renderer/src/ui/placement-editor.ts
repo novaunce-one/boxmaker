@@ -1,6 +1,7 @@
 import { previewContours, previewKey } from '@core/image-trace'
 import { freeSpace, wallThickness } from '@core/engrave'
 import { contoursToCanvas } from './preview-overlay'
+import { renderTextImage } from './text-image'
 import {
   DEFAULT_CUT,
   MAX_EMBOSS_MM,
@@ -32,6 +33,10 @@ import {
 export interface EditorCallbacks {
   /** A gesture (drag/resize/rotate) or numeric/cut edit finished. */
   onChange: (placements: Placement[]) => void
+  /** Available font families for text overlays (built-in + uploaded). */
+  listFonts: () => string[]
+  /** Prompt the user to upload a font file; resolves to its family (or null). */
+  uploadFont: () => Promise<string | null>
 }
 
 const SIZE_PX = 320 // editor canvas long edge
@@ -151,6 +156,13 @@ export class PlacementEditor {
     if (!this.face) return
     this.placements = placements.map(clonePlacement)
     if (this.selected >= this.placements.length) this.selected = this.placements.length - 1
+    this.render()
+  }
+
+  /** Select the last placement and show its fields (used right after adding one). */
+  selectLast(): void {
+    if (!this.face || this.placements.length === 0) return
+    this.selected = this.placements.length - 1
     this.render()
   }
 
@@ -309,8 +321,10 @@ export class PlacementEditor {
       const row = document.createElement('div')
       row.className = 'editor-row' + (i === this.selected ? ' sel' : '')
       const label = document.createElement('span')
-      label.textContent =
-        `Image ${i + 1} (${pl.image.width}×${pl.image.height})` + (pl.cut.mode === 'emboss' ? ' · raised' : '')
+      const name = pl.text
+        ? `“${pl.text.content || '(empty)'}”`
+        : `Image ${i + 1} (${pl.image.width}×${pl.image.height})`
+      label.textContent = name + (pl.cut.mode === 'emboss' ? ' · raised' : '')
       label.addEventListener('click', () => {
         this.selected = i
         this.render()
@@ -339,20 +353,103 @@ export class PlacementEditor {
       this.render()
       this.commit()
     }
-    this.fields.append(
-      numField('Center u (mm)', pl.center[0], commitNum((v) => (pl.center = [v, pl.center[1]]))),
-      numField('Center v (mm)', pl.center[1], commitNum((v) => (pl.center = [pl.center[0], v]))),
-      numField('Width (mm)', pl.size[0], commitNum((v) => (pl.size = [Math.max(0.1, v), Math.max(0.1, v) / aspect]))),
-      numField('Rotation (°)', (pl.rotation * 180) / Math.PI, commitNum((v) => (pl.rotation = (v * Math.PI) / 180))),
-      pl.cut.mode === 'emboss' ? this.heightControl(pl) : this.depthControl(pl),
-      numField('Threshold', pl.cut.threshold, commitNum((v) => (pl.cut.threshold = clamp(v, 0, 255)))),
-      this.smoothingControl(pl),
-      boolField('Invert', pl.cut.invert, (b) => {
-        pl.cut.invert = b
-        this.render()
-        this.commit()
+    const depth = pl.cut.mode === 'emboss' ? this.heightControl(pl) : this.depthControl(pl)
+    const centerU = numField('Center u (mm)', pl.center[0], commitNum((v) => (pl.center = [v, pl.center[1]])))
+    const centerV = numField('Center v (mm)', pl.center[1], commitNum((v) => (pl.center = [pl.center[0], v])))
+    const rotation = numField('Rotation (°)', (pl.rotation * 180) / Math.PI, commitNum((v) => (pl.rotation = (v * Math.PI) / 180)))
+
+    if (pl.text) {
+      // Text overlay: content/font/size/thickness re-render the image; threshold
+      // and invert are hidden (text is drawn black-on-white, so they don't apply).
+      this.fields.append(
+        this.textControls(pl),
+        centerU,
+        centerV,
+        rotation,
+        depth,
+        this.smoothingControl(pl)
+      )
+    } else {
+      this.fields.append(
+        centerU,
+        centerV,
+        numField('Width (mm)', pl.size[0], commitNum((v) => (pl.size = [Math.max(0.1, v), Math.max(0.1, v) / aspect]))),
+        rotation,
+        depth,
+        numField('Threshold', pl.cut.threshold, commitNum((v) => (pl.cut.threshold = clamp(v, 0, 255)))),
+        this.smoothingControl(pl),
+        boolField('Invert', pl.cut.invert, (b) => {
+          pl.cut.invert = b
+          this.render()
+          this.commit()
+        })
+      )
+    }
+  }
+
+  /** The text-overlay fields (content, font + upload, size, thickness). */
+  private textControls(pl: Placement): HTMLElement {
+    const wrap = document.createElement('div')
+    wrap.className = 'editor-text'
+    const text = pl.text! // guarded by caller
+
+    const content = textField('Text', text.content, (v) => {
+      text.content = v
+      this.retext(pl)
+    })
+
+    const fontRow = document.createElement('div')
+    fontRow.className = 'editor-field'
+    fontRow.append(document.createTextNode('Font'))
+    const select = document.createElement('select')
+    for (const family of this.cb.listFonts()) {
+      const opt = document.createElement('option')
+      opt.value = family
+      opt.textContent = family
+      opt.selected = family === text.fontFamily
+      select.appendChild(opt)
+    }
+    select.addEventListener('change', () => {
+      text.fontFamily = select.value
+      this.retext(pl)
+    })
+    const upload = document.createElement('button')
+    upload.textContent = 'Upload…'
+    upload.title = 'Upload a .ttf/.otf font file'
+    upload.addEventListener('click', () => {
+      void this.cb.uploadFont().then((family) => {
+        if (!family) return
+        text.fontFamily = family
+        this.retext(pl) // re-renders the list + reselects the new font
       })
-    )
+    })
+    const fontPick = document.createElement('div')
+    fontPick.className = 'editor-font-pick'
+    fontPick.append(select, upload)
+    fontRow.appendChild(fontPick)
+
+    const size = numField('Font size (mm)', text.fontSizeMm, (v) => {
+      text.fontSizeMm = Math.max(0.5, v)
+      this.retext(pl)
+    })
+    const thickness = numField('Thickness (mm)', text.thicknessMm, (v) => {
+      text.thicknessMm = Math.max(0, v)
+      this.retext(pl)
+    })
+
+    wrap.append(content, fontRow, size, thickness)
+    return wrap
+  }
+
+  /** Re-rasterize a text placement after a content/font/size/thickness change. */
+  private retext(pl: Placement): void {
+    if (!pl.text) return
+    const { image, sizeMm } = renderTextImage(pl.text)
+    pl.image = image
+    pl.size = sizeMm
+    this.clamp(pl)
+    this.render()
+    this.commit()
   }
 
   /**
@@ -627,6 +724,8 @@ export class PlacementEditor {
       const aspect = pl.size[0] / pl.size[1]
       const factor = Math.max((Math.abs(lx) * 2) / pl.size[0], (Math.abs(ly) * 2) / pl.size[1])
       pl.size = [Math.max(0.2, pl.size[0] * factor), Math.max(0.2, pl.size[0] * factor) / aspect]
+      // Keep a text overlay's font size in sync with the resized height.
+      if (pl.text) pl.text.fontSizeMm = pl.size[1]
     }
     this.clamp(pl)
     this.render()
@@ -721,7 +820,8 @@ function clonePlacement(p: Placement): Placement {
     size: [p.size[0], p.size[1]],
     rotation: p.rotation,
     image: p.image,
-    cut: { ...p.cut }
+    cut: { ...p.cut },
+    ...(p.text ? { text: { ...p.text } } : {})
   }
 }
 
@@ -756,6 +856,20 @@ function numField(label: string, value: number, onChange: (v: number) => void): 
     const v = Number(input.value)
     if (Number.isFinite(v)) onChange(v)
   })
+  wrap.appendChild(input)
+  return wrap
+}
+
+function textField(label: string, value: string, onChange: (v: string) => void): HTMLElement {
+  const wrap = document.createElement('label')
+  wrap.className = 'editor-field'
+  wrap.append(document.createTextNode(label))
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.value = value
+  // `change` (blur/Enter) not `input`: re-rendering on every keystroke would
+  // rebuild the field and steal focus.
+  input.addEventListener('change', () => onChange(input.value))
   wrap.appendChild(input)
   return wrap
 }

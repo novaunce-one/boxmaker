@@ -622,3 +622,40 @@ input[type='checkbox'] {
 .editor-mode-seg {
   margin-top: 0;
 }
+
+/* Text-overlay controls (content, font + upload, size, thickness). */
+.editor-text {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editor-text .editor-field input[type='text'] {
+  width: 100%;
+}
+
+.editor-font-pick {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.editor-font-pick select {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--label);
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  box-shadow: var(--shadow-control);
+}
+
+.editor-font-pick button {
+  min-height: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+}

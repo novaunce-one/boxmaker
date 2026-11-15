@@ -10,6 +10,7 @@ export interface ControlsCallbacks {
   onSaveProject: () => void | Promise<void>
   onSaveProjectAs: () => void | Promise<void>
   onAddImage: (file: File) => void | Promise<void>
+  onAddText: () => void | Promise<void>
   onPreviewModeChange: (mode: PreviewMode) => void
   onDeEtchModeChange: (on: boolean) => void
   onUndo: () => void
@@ -23,6 +24,7 @@ export class Controls {
   private undoBtn!: HTMLButtonElement
   private redoBtn!: HTMLButtonElement
   private addBtn!: HTMLButtonElement
+  private addTextBtn!: HTMLButtonElement
   private overlayBtn!: HTMLButtonElement
   private cutBtn!: HTMLButtonElement
   private deEtchBtn!: HTMLButtonElement
@@ -70,6 +72,9 @@ export class Controls {
     })
     this.addBtn = this.makeButton('Add image to face…', () => fileInput.click())
 
+    // Add a text overlay to the currently picked face.
+    this.addTextBtn = this.makeButton('Add text to face…', () => void this.cb.onAddText())
+
     // De-etch: rubber-band select an etched area to smooth it flat.
     this.deEtchBtn = this.makeButton('De-etch region', () => this.toggleDeEtch())
 
@@ -105,6 +110,7 @@ export class Controls {
       modeRow,
       label('Edit'),
       this.addBtn,
+      this.addTextBtn,
       this.deEtchBtn,
       historyRow,
       label('Export'),
@@ -234,6 +240,7 @@ export class Controls {
   /** Enable image placement / de-etch only once a face is selected. */
   setFacePicked(picked: boolean): void {
     this.addBtn.disabled = !picked
+    this.addTextBtn.disabled = !picked
     this.deEtchBtn.disabled = !picked
     if (!picked && this.deEtchOn) this.toggleDeEtch()
   }

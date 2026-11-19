@@ -154,3 +154,98 @@ function openDb(): Promise<IDBDatabase> {
     req.onerror = () => reject(req.error)
   })
 }
+
+// --- recent projects (browser) -------------------------------------------
+// Chromium's FileSystemFileHandle is structured-cloneable, so we keep up to
+// RECENT_MAX of them in IndexedDB and reopen with a permission re-request.
+// Browsers without the File System Access API have no durable handle, so a
+// downloaded project simply isn't added to the list.
+
+const RECENT_KEY = 'recent-projects'
+const RECENT_MAX = 4
+
+interface RecentRecord {
+  name: string
+  handle: WebFileHandle
+}
+
+/** The FileSystemHandle permission methods, not in every TS DOM lib. */
+interface PermissionedHandle {
+  queryPermission?: (opts: { mode: string }) => Promise<string>
+  requestPermission?: (opts: { mode: string }) => Promise<string>
+  isSameEntry?: (other: WebFileHandle) => Promise<boolean>
+}
+
+/** Record a just-opened/saved project at the top of the recents (needs a handle). */
+export async function addRecentProject(entry: { name: string; handle?: WebFileHandle }): Promise<void> {
+  const handle = entry.handle
+  if (!handle) return // no durable reference (download fallback) ⇒ cannot reopen
+  const list = await getRecents()
+  const kept: RecentRecord[] = []
+  for (const r of list) {
+    if (!(await isSameEntry(r.handle, handle))) kept.push(r)
+  }
+  await putRecents([{ name: entry.name, handle }, ...kept].slice(0, RECENT_MAX))
+}
+
+/** Names of recent projects, most-recent first. */
+export async function listRecentProjects(): Promise<string[]> {
+  return (await getRecents()).map((r) => r.name)
+}
+
+/** Reopen recent #index: re-request read permission and read the file; null if gone/denied. */
+export async function openRecentProject(index: number): Promise<OpenedProject | null> {
+  const list = await getRecents()
+  const rec = list[index]
+  if (!rec) return null
+  const perm = rec.handle as unknown as PermissionedHandle
+  try {
+    let state = (await perm.queryPermission?.({ mode: 'read' })) ?? 'granted'
+    if (state !== 'granted') state = (await perm.requestPermission?.({ mode: 'read' })) ?? 'denied'
+    if (state !== 'granted') return null
+    const file = await rec.handle.getFile()
+    const data = new Uint8Array(await file.arrayBuffer())
+    return { name: rec.handle.name || rec.name, data, handle: rec.handle }
+  } catch {
+    // File moved or deleted — forget this entry.
+    await putRecents(list.filter((_, i) => i !== index))
+    return null
+  }
+}
+
+/** Forget all recent projects. */
+export async function clearRecentProjects(): Promise<void> {
+  await putRecents([])
+}
+
+async function isSameEntry(a: WebFileHandle, b: WebFileHandle): Promise<boolean> {
+  const pa = a as unknown as PermissionedHandle
+  try {
+    return pa.isSameEntry ? await pa.isSameEntry(b) : a.name === b.name
+  } catch {
+    return a.name === b.name
+  }
+}
+
+async function getRecents(): Promise<RecentRecord[]> {
+  const db = await openDb()
+  const list = await new Promise<RecentRecord[]>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly')
+    const req = tx.objectStore(STORE).get(RECENT_KEY)
+    req.onsuccess = () => resolve(Array.isArray(req.result) ? (req.result as RecentRecord[]) : [])
+    req.onerror = () => reject(req.error)
+  })
+  db.close()
+  return list
+}
+
+async function putRecents(list: RecentRecord[]): Promise<void> {
+  const db = await openDb()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.objectStore(STORE).put(list, RECENT_KEY)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+  db.close()
+}

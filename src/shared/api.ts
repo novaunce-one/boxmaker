@@ -35,6 +35,7 @@ export const Channels = {
   loadTemplate: 'template:load',
   openProject: 'project:open',
   saveProject: 'project:save',
+  openRecent: 'project:open-recent',
   menuCommand: 'menu:command'
 } as const
 
@@ -66,4 +67,9 @@ export interface BoxmakerApi {
   saveProject(suggestedName: string, data: Uint8Array, filePath?: string): Promise<SaveResult>
   /** Subscribe to native File-menu commands. Returns an unsubscribe function. */
   onMenuCommand(handler: (command: MenuCommand) => void): () => void
+  /**
+   * Subscribe to "Open Recent" menu choices: the main process reads the chosen
+   * project file and pushes it here. Returns an unsubscribe function.
+   */
+  onOpenRecentProject(handler: (file: ProjectFile) => void): () => void
 }

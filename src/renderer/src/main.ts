@@ -40,6 +40,9 @@ import {
   loadLastTemplate,
   openProjectFile,
   saveProjectFile,
+  addRecentProject,
+  listRecentProjects,
+  openRecentProject,
   type WebFileHandle
 } from './web-io'
 import { encodeImagePng, decodeImagePng } from './image-codec'
@@ -182,9 +185,44 @@ async function bootstrap(): Promise<void> {
       }
       savedState = snapshot
       updateTitle()
+      void recordRecent(projectRef)
     } catch (err) {
       console.error(err)
       window.alert(`Could not save the project:\n\n${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /**
+   * Apply a project from its bytes + a reference to where it lives (so Save can
+   * overwrite it). Shared by the Open dialog and the Open Recent paths. Returns
+   * true when the project was restored.
+   */
+  async function openProjectFrom(bytes: Uint8Array, ref: ProjectRef): Promise<boolean> {
+    const doc = await deserializeProject(new TextDecoder().decode(bytes), decodeImagePng)
+    // Register embedded fonts so text placements can be re-edited with them.
+    await fontRegistry.register(doc.fonts)
+    const template: StlFile = { name: doc.templateName, data: doc.template }
+    loadModel(template)
+    if (!window.boxmaker) void saveLastTemplate(template)
+    const problem = checkProjectFits(pieces, doc.state)
+    if (problem) {
+      window.alert(`The project could not be restored:\n\n${problem}`)
+      return false // template stays loaded, project stays empty
+    }
+    history.reset(doc.state)
+    savedState = history.state
+    projectRef = ref
+    applyState(history.state)
+    return true
+  }
+
+  /** Record the project in the browser recents (desktop tracks its own, in main). */
+  async function recordRecent(ref: ProjectRef | null): Promise<void> {
+    if (window.boxmaker || !ref?.handle) return
+    try {
+      await addRecentProject({ name: ref.name, handle: ref.handle })
+    } catch (err) {
+      console.warn('could not record recent project:', err)
     }
   }
 
@@ -205,21 +243,24 @@ async function bootstrap(): Promise<void> {
         bytes = file.data
         ref = { name: file.name, handle: file.handle }
       }
-      const doc = await deserializeProject(new TextDecoder().decode(bytes), decodeImagePng)
-      // Register embedded fonts so text placements can be re-edited with them.
-      await fontRegistry.register(doc.fonts)
-      const template: StlFile = { name: doc.templateName, data: doc.template }
-      loadModel(template)
-      if (!window.boxmaker) void saveLastTemplate(template)
-      const problem = checkProjectFits(pieces, doc.state)
-      if (problem) {
-        window.alert(`The project could not be restored:\n\n${problem}`)
-        return // template stays loaded, project stays empty
+      if (await openProjectFrom(bytes, ref)) await recordRecent(ref)
+    } catch (err) {
+      console.error(err)
+      window.alert(`Could not open the project:\n\n${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /** Reopen a browser recent (by menu index); re-requests file permission. */
+  async function openRecent(index: number): Promise<void> {
+    if (!confirmDiscard()) return
+    try {
+      const opened = await openRecentProject(index)
+      if (!opened) {
+        window.alert('That project could not be reopened (the file may have moved, or access was denied).')
+        return
       }
-      history.reset(doc.state)
-      savedState = history.state
-      projectRef = ref
-      applyState(history.state)
+      const ref: ProjectRef = { name: opened.name, handle: opened.handle }
+      if (await openProjectFrom(opened.data, ref)) await recordRecent(ref)
     } catch (err) {
       console.error(err)
       window.alert(`Could not open the project:\n\n${err instanceof Error ? err.message : String(err)}`)
@@ -230,6 +271,8 @@ async function bootstrap(): Promise<void> {
     onOpenProject: () => openProject(),
     onSaveProject: () => saveProject(false),
     onSaveProjectAs: () => saveProject(true),
+    listRecentProjects: () => listRecentProjects(),
+    onOpenRecentProject: (index) => openRecent(index),
     onLoadTemplate: async () => {
       try {
         if (!confirmDiscard()) return
@@ -287,6 +330,19 @@ async function bootstrap(): Promise<void> {
     // Commit a half-typed number field first (its `change` fires on blur).
     if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur()
     void saveProject(command === 'save-project-as')
+  })
+
+  // Desktop: File → Open Recent; the main process reads the file and pushes it.
+  window.boxmaker?.onOpenRecentProject((file) => {
+    void (async () => {
+      if (!confirmDiscard()) return
+      try {
+        await openProjectFrom(file.data, { name: file.name, filePath: file.filePath })
+      } catch (err) {
+        console.error(err)
+        window.alert(`Could not open the project:\n\n${err instanceof Error ? err.message : String(err)}`)
+      }
+    })()
   })
 
   /** Assemble → scale + restore hinge gap → repair → validate → save (desktop .stl / browser .zip). */

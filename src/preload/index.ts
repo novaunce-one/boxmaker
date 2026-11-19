@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import { Channels, type BoxmakerApi, type MenuCommand } from '../shared/api'
+import { Channels, type BoxmakerApi, type MenuCommand, type ProjectFile } from '../shared/api'
 
 // The only surface the renderer gets. Each method is a thin pass-through to an
 // IPC handler registered in the main process (src/main/index.ts).
@@ -15,6 +15,11 @@ const api: BoxmakerApi = {
     const listener = (_evt: IpcRendererEvent, command: MenuCommand): void => handler(command)
     ipcRenderer.on(Channels.menuCommand, listener)
     return () => ipcRenderer.removeListener(Channels.menuCommand, listener)
+  },
+  onOpenRecentProject: (handler) => {
+    const listener = (_evt: IpcRendererEvent, file: ProjectFile): void => handler(file)
+    ipcRenderer.on(Channels.openRecent, listener)
+    return () => ipcRenderer.removeListener(Channels.openRecent, listener)
   }
 }
 

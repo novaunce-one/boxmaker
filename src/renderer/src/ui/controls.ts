@@ -9,6 +9,10 @@ export interface ControlsCallbacks {
   onOpenProject: () => void | Promise<void>
   onSaveProject: () => void | Promise<void>
   onSaveProjectAs: () => void | Promise<void>
+  /** Names of recent projects, most-recent first (browser File menu). */
+  listRecentProjects: () => Promise<string[]>
+  /** Reopen the recent project at `index` in the list from `listRecentProjects`. */
+  onOpenRecentProject: (index: number) => void | Promise<void>
   onAddImage: (file: File) => void | Promise<void>
   onAddText: () => void | Promise<void>
   onPreviewModeChange: (mode: PreviewMode) => void
@@ -220,11 +224,52 @@ export class Controls {
     }
 
     item('Open project…', `${mod}O`, () => this.cb.onOpenProject())
+
+    // Open Recent — up to 4, refreshed each time the menu opens.
+    pop.appendChild(separator())
+    const recentHeader = document.createElement('div')
+    recentHeader.className = 'file-menu-label'
+    recentHeader.textContent = 'Open Recent'
+    const recentBox = document.createElement('div')
+    recentBox.className = 'file-menu-recents'
+    pop.append(recentHeader, recentBox)
+    pop.appendChild(separator())
+
     this.saveItem = item('Save', `${mod}S`, () => this.cb.onSaveProject())
     this.saveAsItem = item('Save as…', `⇧${mod}S`, () => this.cb.onSaveProjectAs())
 
+    const refreshRecents = async (): Promise<void> => {
+      let names: string[] = []
+      try {
+        names = await this.cb.listRecentProjects()
+      } catch {
+        names = []
+      }
+      recentBox.replaceChildren()
+      if (names.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'file-menu-empty'
+        empty.textContent = 'No recent projects'
+        recentBox.appendChild(empty)
+        return
+      }
+      names.forEach((name, i) => {
+        const b = document.createElement('button')
+        b.className = 'file-menu-item'
+        const label = document.createElement('span')
+        label.textContent = name
+        b.appendChild(label)
+        b.addEventListener('click', () => {
+          close()
+          void this.cb.onOpenRecentProject(i)
+        })
+        recentBox.appendChild(b)
+      })
+    }
+
     toggle.addEventListener('click', () => {
       pop.hidden = !pop.hidden
+      if (!pop.hidden) void refreshRecents()
     })
     document.addEventListener('click', (e) => {
       if (!wrap.contains(e.target as Node)) close()
@@ -274,6 +319,12 @@ function label(text: string): HTMLElement {
   const el = document.createElement('div')
   el.className = 'label'
   el.textContent = text
+  return el
+}
+
+function separator(): HTMLElement {
+  const el = document.createElement('div')
+  el.className = 'file-menu-sep'
   return el
 }
 

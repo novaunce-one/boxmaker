@@ -1,6 +1,7 @@
 import { app, shell, BrowserWindow, Menu, ipcMain, dialog, type MenuItemConstructorOptions } from 'electron'
 import { basename, join } from 'path'
 import { readFile, writeFile } from 'fs/promises'
+import { readFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { Channels, type MenuCommand, type ProjectFile, type SaveResult, type StlFile } from '../shared/api'
 
@@ -11,6 +12,62 @@ function templatePath(): string {
   return is.dev
     ? join(__dirname, '../../resources/template.stl')
     : join(process.resourcesPath, 'resources/template.stl')
+}
+
+// --- recent projects ------------------------------------------------------
+// Up to RECENT_MAX most-recently opened/saved project paths, persisted to the
+// app's userData dir and shown in File → Open Recent. Only paths the user
+// chose this way (or via a dialog) can be read back (NFR-SEC-1).
+const RECENT_MAX = 4
+const grantedProjectPaths = new Set<string>()
+let recentProjects: string[] = []
+
+const recentStorePath = (): string => join(app.getPath('userData'), 'recent-projects.json')
+
+function loadRecents(): void {
+  try {
+    const list: unknown = JSON.parse(readFileSync(recentStorePath(), 'utf8'))
+    recentProjects = Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string').slice(0, RECENT_MAX) : []
+  } catch {
+    recentProjects = [] // no file yet / unreadable
+  }
+  for (const p of recentProjects) grantedProjectPaths.add(p)
+}
+
+function saveRecents(): void {
+  void writeFile(recentStorePath(), JSON.stringify(recentProjects)).catch(() => {})
+}
+
+/** Put `path` at the top of the recents (deduped, capped) and refresh the menu. */
+function addRecent(path: string): void {
+  recentProjects = [path, ...recentProjects.filter((p) => p !== path)].slice(0, RECENT_MAX)
+  grantedProjectPaths.add(path)
+  saveRecents()
+  app.addRecentDocument(path) // also feeds the OS "recent documents" where supported
+  buildMenu()
+}
+
+/** Read a recent project and push it to the renderer (or drop it if it's gone). */
+async function openRecentProject(path: string): Promise<void> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  try {
+    const data = await readFile(path)
+    grantedProjectPaths.add(path)
+    const file: ProjectFile = { name: basename(path), filePath: path, data: new Uint8Array(data) }
+    win?.webContents.send(Channels.openRecent, file)
+    addRecent(path) // move it to the top
+  } catch {
+    recentProjects = recentProjects.filter((p) => p !== path)
+    saveRecents()
+    buildMenu()
+    if (win) {
+      void dialog.showMessageBox(win, {
+        type: 'warning',
+        message: 'That project could not be opened.',
+        detail: `${path}\n\nThe file may have been moved or deleted; it has been removed from Open Recent.`
+      })
+    }
+  }
 }
 
 function createWindow(): void {
@@ -61,12 +118,31 @@ function buildMenu(): void {
       win?.webContents.send(Channels.menuCommand, command)
     }
 
+  const recentSubmenu: MenuItemConstructorOptions[] = recentProjects.length
+    ? [
+        ...recentProjects.map(
+          (p): MenuItemConstructorOptions => ({ label: basename(p), click: () => void openRecentProject(p) })
+        ),
+        { type: 'separator' },
+        {
+          label: 'Clear Recent',
+          click: () => {
+            recentProjects = []
+            saveRecents()
+            app.clearRecentDocuments()
+            buildMenu()
+          }
+        }
+      ]
+    : [{ label: 'No Recent Projects', enabled: false }]
+
   const template: MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: 'appMenu' } as MenuItemConstructorOptions] : []),
     {
       label: 'File',
       submenu: [
         { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
+        { label: 'Open Recent', submenu: recentSubmenu },
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save-project') },
         { label: 'Save As…', accelerator: 'Shift+CmdOrCtrl+S', click: send('save-project-as') },
@@ -112,9 +188,9 @@ function registerIpc(): void {
     }
   )
 
-  // Paths the user picked in a native dialog this session. The renderer may only
-  // overwrite these silently (Save), never an arbitrary path (NFR-SEC-1).
-  const grantedProjectPaths = new Set<string>()
+  // `grantedProjectPaths` (module scope) holds the paths the user picked via a
+  // dialog or Open Recent; the renderer may only overwrite these silently (Save),
+  // never an arbitrary path (NFR-SEC-1).
   const PROJECT_FILTER = { name: 'boxmaker project', extensions: ['boxmaker'] }
 
   ipcMain.handle(Channels.openProject, async (): Promise<ProjectFile | null> => {
@@ -126,7 +202,7 @@ function registerIpc(): void {
     if (canceled || filePaths.length === 0) return null
     const filePath = filePaths[0]
     const data = await readFile(filePath)
-    grantedProjectPaths.add(filePath)
+    addRecent(filePath)
     return { name: basename(filePath), filePath, data: new Uint8Array(data) }
   })
 
@@ -145,7 +221,7 @@ function registerIpc(): void {
         if (!/\.boxmaker$/i.test(target)) target += '.boxmaker'
       }
       await writeFile(target, Buffer.from(data))
-      grantedProjectPaths.add(target)
+      addRecent(target)
       return { canceled: false, filePath: target }
     }
   )
@@ -171,6 +247,7 @@ app.whenReady().then(() => {
   })
 
   registerIpc()
+  loadRecents()
   buildMenu()
   createWindow()
 

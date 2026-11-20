@@ -45,13 +45,20 @@ const ROT_ARM = 22 // rotate-handle distance above the box, px
 /** Depth slider ceiling when no wall can be measured under the image (nothing to cap against). */
 const UNMEASURED_MAX_DEPTH_MM = 5
 
-type Mode = { kind: 'drag' | 'rotate' } | { kind: 'resize'; corner: Vec2 }
+/** `both` = aspect-locked (corner handles); `x`/`y` = single-axis (red/green edge handles). */
+type Mode =
+  | { kind: 'drag' }
+  | { kind: 'rotate' }
+  | { kind: 'resize'; axis: 'both' | 'x' | 'y' }
 
 export class PlacementEditor {
   private face: FacePlane | null = null
   private placements: Placement[] = []
   private marginMm = 2
   private selected = -1
+  // A copied overlay, kept across face selections so it can be pasted onto any
+  // face. Deep-cloned on copy and on paste, so copies are fully independent.
+  private clipboard: Placement | null = null
 
   // Face (u,v) view window and uv→px scale, computed on open().
   private view = { minU: 0, maxU: 1, minV: 0, maxV: 1 }
@@ -294,7 +301,7 @@ export class PlacementEditor {
     g.appendChild(frame)
 
     if (index === this.selected) {
-      // Resize handles at the four corners (aspect-locked), rotate handle above.
+      // Corner handles: aspect-locked resize. Rotate handle above.
       const corners: Vec2[] = [
         [-1, -1],
         [1, -1],
@@ -304,19 +311,36 @@ export class PlacementEditor {
       for (const [sx, sy] of corners) {
         const hc = handle((sx * w) / 2, (sy * h) / 2, 'editor-handle')
         hc.dataset.role = 'resize'
-        hc.dataset.cornerX = String(sx)
-        hc.dataset.cornerY = String(sy)
         g.appendChild(hc)
       }
+      // Edge handles: single-axis resize — red = width (X), green = height (Y).
+      const hx = handle(w / 2, 0, 'editor-handle-x')
+      hx.dataset.role = 'resize-x'
+      const hy = handle(0, h / 2, 'editor-handle-y')
+      hy.dataset.role = 'resize-y'
       const rh = handle(0, -h / 2 - ROT_ARM, 'editor-rot')
       rh.dataset.role = 'rotate'
-      g.appendChild(rh)
+      g.append(hx, hy, rh)
     }
     return g
   }
 
   private renderList(): void {
     this.list.replaceChildren()
+
+    // Paste bar — shown when something has been copied; pastes onto this face.
+    if (this.clipboard) {
+      const bar = document.createElement('div')
+      bar.className = 'editor-paste'
+      const paste = document.createElement('button')
+      const what = this.clipboard.text ? `“${this.clipboard.text.content || 'text'}”` : 'copied overlay'
+      paste.textContent = `Paste ${what} here`
+      paste.title = 'Add the copied overlay to this face'
+      paste.addEventListener('click', () => this.pasteFromClipboard())
+      bar.appendChild(paste)
+      this.list.appendChild(bar)
+    }
+
     this.placements.forEach((pl, i) => {
       const row = document.createElement('div')
       row.className = 'editor-row' + (i === this.selected ? ' sel' : '')
@@ -329,6 +353,10 @@ export class PlacementEditor {
         this.selected = i
         this.render()
       })
+      const copy = document.createElement('button')
+      copy.textContent = 'Copy'
+      copy.title = 'Copy this overlay (then Paste it on this or another face)'
+      copy.addEventListener('click', () => this.copyToClipboard(i))
       const del = document.createElement('button')
       del.textContent = 'Delete'
       del.addEventListener('click', () => {
@@ -337,9 +365,34 @@ export class PlacementEditor {
         this.render()
         this.commit()
       })
-      row.append(label, del)
+      const actions = document.createElement('span')
+      actions.className = 'editor-row-actions'
+      actions.append(copy, del)
+      row.append(label, actions)
       this.list.appendChild(row)
     })
+  }
+
+  /** Copy placement #index to the clipboard (paste it on this or another face). */
+  private copyToClipboard(index: number): void {
+    const src = this.placements[index]
+    if (!src) return
+    this.clipboard = clonePlacement(src)
+    this.render() // reveal the Paste button
+  }
+
+  /** Paste the clipboard overlay onto the current face as an independent copy. */
+  private pasteFromClipboard(): void {
+    if (!this.clipboard || !this.face) return
+    const dup = clonePlacement(this.clipboard) // fresh clone ⇒ independent of the source
+    // Offset so a same-face paste is visible; clamp keeps it on any face.
+    const off = Math.max(1, Math.min(dup.size[0], dup.size[1]) * 0.25)
+    dup.center = [dup.center[0] + off, dup.center[1] - off]
+    this.placements.push(dup)
+    this.selected = this.placements.length - 1
+    this.clamp(dup)
+    this.render()
+    this.commit()
   }
 
   private renderFields(): void {
@@ -689,8 +742,9 @@ export class PlacementEditor {
     const group = target.closest('g[data-index]') as SVGGElement | null
     if (group) this.selected = Number(group.dataset.index)
     if (role === 'rotate') this.active = { kind: 'rotate' }
-    else if (role === 'resize')
-      this.active = { kind: 'resize', corner: [Number(target.dataset.cornerX), Number(target.dataset.cornerY)] }
+    else if (role === 'resize') this.active = { kind: 'resize', axis: 'both' }
+    else if (role === 'resize-x') this.active = { kind: 'resize', axis: 'x' }
+    else if (role === 'resize-y') this.active = { kind: 'resize', axis: 'y' }
     else if (role === 'body') this.active = { kind: 'drag' }
     else {
       this.active = null
@@ -702,7 +756,8 @@ export class PlacementEditor {
   }
 
   private onPointerMove(e: PointerEvent): void {
-    if (!this.active) return
+    const mode = this.active
+    if (!mode) return
     const pl = this.placements[this.selected]
     if (!pl) return
     const rect = this.svg.getBoundingClientRect()
@@ -710,20 +765,27 @@ export class PlacementEditor {
     const du = u - pl.center[0]
     const dv = v - pl.center[1]
 
-    if (this.active.kind === 'drag') {
+    if (mode.kind === 'drag') {
       pl.center = [u, v] // pointer grabs the box center (simple, predictable)
-    } else if (this.active.kind === 'rotate') {
+    } else if (mode.kind === 'rotate') {
       // Handle sits along local +v; angle it toward the pointer (CCW in uv).
       pl.rotation = Math.atan2(-du, dv)
     } else {
-      // Aspect-locked resize about the fixed center: project onto local axes.
+      // Resize about the fixed centre: project the pointer onto the local axes.
       const c = Math.cos(pl.rotation)
       const s = Math.sin(pl.rotation)
-      const lx = du * c + dv * s // local u
-      const ly = -du * s + dv * c // local v
-      const aspect = pl.size[0] / pl.size[1]
-      const factor = Math.max((Math.abs(lx) * 2) / pl.size[0], (Math.abs(ly) * 2) / pl.size[1])
-      pl.size = [Math.max(0.2, pl.size[0] * factor), Math.max(0.2, pl.size[0] * factor) / aspect]
+      const lx = du * c + dv * s // local u (width direction)
+      const ly = -du * s + dv * c // local v (height direction)
+      if (mode.axis === 'x') {
+        pl.size = [Math.max(0.2, Math.abs(lx) * 2), pl.size[1]] // red: width only
+      } else if (mode.axis === 'y') {
+        pl.size = [pl.size[0], Math.max(0.2, Math.abs(ly) * 2)] // green: height only
+      } else {
+        // Aspect-locked (corner handles).
+        const aspect = pl.size[0] / pl.size[1]
+        const factor = Math.max((Math.abs(lx) * 2) / pl.size[0], (Math.abs(ly) * 2) / pl.size[1])
+        pl.size = [Math.max(0.2, pl.size[0] * factor), Math.max(0.2, pl.size[0] * factor) / aspect]
+      }
       // Keep a text overlay's font size in sync with the resized height.
       if (pl.text) pl.text.fontSizeMm = pl.size[1]
     }

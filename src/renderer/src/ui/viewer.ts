@@ -311,25 +311,30 @@ export class Viewer {
   }
 
   private renderCut(state: ProjectState): void {
+    // Group engraved faces by piece so several faces on one piece COMPOUND on a
+    // single evolving mesh. Engraving each from `entry.base` independently made
+    // the last face overwrite the others (a second face hid the first).
+    const byPiece = new Map<number, ProjectState['faces']>()
     for (const fw of state.faces) {
       if (fw.placements.length === 0) continue
-      const entry = this.pieces.get(fw.face.pieceId)
-      if (!entry) continue
-      try {
-        const others = [...this.pieces].filter(([id]) => id !== fw.face.pieceId).map(([, e]) => e.original)
-        const { piece } = engraveFace(
-          { id: fw.face.pieceId, mesh: entry.base },
-          fw.face,
-          fw.placements,
-          state.marginMm,
-          undefined,
-          others
-        )
-        entry.object.geometry.dispose()
-        entry.object.geometry = toGeometry(piece.mesh)
-      } catch (err) {
-        console.error('cut preview failed:', err)
+      const list = byPiece.get(fw.face.pieceId)
+      if (list) list.push(fw)
+      else byPiece.set(fw.face.pieceId, [fw])
+    }
+    for (const [pieceId, entry] of this.pieces) {
+      const faces = byPiece.get(pieceId)
+      if (!faces) continue // no engraving: the base (de-etched) geometry stands
+      const others = [...this.pieces].filter(([id]) => id !== pieceId).map(([, e]) => e.original)
+      let mesh = entry.base
+      for (const fw of faces) {
+        try {
+          mesh = engraveFace({ id: pieceId, mesh }, fw.face, fw.placements, state.marginMm, undefined, others).piece.mesh
+        } catch (err) {
+          console.error('cut preview failed:', err)
+        }
       }
+      entry.object.geometry.dispose()
+      entry.object.geometry = toGeometry(mesh)
     }
   }
 

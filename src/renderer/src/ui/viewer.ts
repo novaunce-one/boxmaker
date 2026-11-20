@@ -1,5 +1,4 @@
 import * as THREE from 'three'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { detectFace, findSeedTriangle, rebindFace } from '@core/faces'
 import { engraveFace, smoothRegion } from '@core/engrave'
 import type { FacePlane, IndexedMesh, MeshPiece, PreviewMode, ProjectState, Rect2 } from '@core/types'
@@ -15,8 +14,26 @@ export class Viewer {
   private readonly renderer: THREE.WebGLRenderer
   private readonly scene = new THREE.Scene()
   private readonly camera: THREE.PerspectiveCamera
-  private readonly controls: OrbitControls
   private readonly raycaster = new THREE.Raycaster()
+
+  // --- turntable camera -----------------------------------------------------
+  // A yaw-about-vertical + pitch orbit: full 360° on BOTH axes with the horizon
+  // always level (the camera's right axis stays horizontal, so the view never
+  // rolls — the "always upright" feel) and no pole singularity (it's quaternion
+  // composition, not a camera `up`/`lookAt`).
+  private camTarget = new THREE.Vector3()
+  private camRadius = 300
+  private camRadiusMin = 1
+  private camRadiusMax = 1e6
+  private camYaw = -0.6 // radians, about world +Z
+  private camPitch = 0.5 // radians, tilt toward the viewer
+  private camDirty = true
+  private orbit: { mode: 'rotate' | 'pan'; x: number; y: number; moved: boolean } | null = null
+  private readonly tmpQ = new THREE.Quaternion()
+  private readonly tmpQ2 = new THREE.Quaternion()
+  private readonly tmpV = new THREE.Vector3()
+  private readonly tmpRight = new THREE.Vector3()
+  private readonly tmpUp = new THREE.Vector3()
 
   private readonly modelGroup = new THREE.Group()
   private readonly highlightGroup = new THREE.Group()
@@ -53,10 +70,6 @@ export class Viewer {
 
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 10000)
     this.camera.up.set(0, 0, 1) // Z-up — matches core/faces.ts basis math
-    this.camera.position.set(120, -160, 120)
-
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement)
-    this.controls.enableDamping = true
 
     this.scene.background = new THREE.Color(0x1e1f22)
     // Lighting: a key light that follows the camera (so relief is always
@@ -78,6 +91,8 @@ export class Viewer {
     el.addEventListener('pointerdown', (e) => this.onPointerDown(e))
     el.addEventListener('pointermove', (e) => this.onPointerMove(e))
     window.addEventListener('pointerup', (e) => this.onPointerUp(e))
+    el.addEventListener('wheel', (e) => this.onWheel(e), { passive: false })
+    el.addEventListener('contextmenu', (e) => e.preventDefault()) // right-drag pans
     this.resize()
     // Track the container itself (not just the window) so the drawing buffer
     // always matches its on-screen size; a stale buffer is stretched and blurry.
@@ -105,10 +120,9 @@ export class Viewer {
     this.previewMode = mode
   }
 
-  /** Toggle rubber-band de-etch selection (disables orbit while active). */
+  /** Toggle rubber-band de-etch selection (it takes over left-drag from orbit). */
   setDeEtchMode(on: boolean): void {
     this.deEtch = on
-    this.controls.enabled = !on
     this.renderer.domElement.style.cursor = on ? 'crosshair' : ''
   }
 
@@ -126,7 +140,7 @@ export class Viewer {
 
   start(): void {
     const loop = (): void => {
-      this.controls.update()
+      this.updateCamera()
       this.renderer.render(this.scene, this.camera)
       requestAnimationFrame(loop)
     }
@@ -149,13 +163,21 @@ export class Viewer {
     if (!entry) return
     // The mesh on screen may be a de-etched or cut version of the piece, whose
     // triangle numbering differs from `entry.original` (which FacePlanes index).
-    // Map the hit position back onto the original so face identity stays stable.
-    const seed = findSeedTriangle(
-      entry.original,
-      [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z],
-      [hit.point.x, hit.point.y, hit.point.z]
-    )
-    if (seed < 0) return
+    // Map the hit back onto the original. Fast path: in overlay mode with no
+    // de-etch the displayed geometry *is* the original (toGeometry preserves
+    // triangle order), so the raycast faceIndex is already the core index — this
+    // skips an O(n) scan of every triangle on each click.
+    let seed: number
+    if (this.previewMode === 'overlay' && entry.base === entry.original && hit.faceIndex != null) {
+      seed = hit.faceIndex
+    } else {
+      seed = findSeedTriangle(
+        entry.original,
+        [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z],
+        [hit.point.x, hit.point.y, hit.point.z]
+      )
+      if (seed < 0) return
+    }
     // Clicking the already-selected face toggles it off.
     if (this.pickedFace && this.pickedFace.pieceId === pieceId && this.pickedFace.triangles.includes(seed)) {
       this.clearSelection()
@@ -220,30 +242,58 @@ export class Viewer {
     )
   }
 
-  // --- rubber-band de-etch selection -------------------------------------
+  // --- camera orbit/pan + rubber-band de-etch selection -------------------
 
   private onPointerDown(e: PointerEvent): void {
     this.suppressClick = false // drop a stale flag (e.g. drag released off-canvas)
-    if (!this.deEtch || !this.pickedFace) return
-    const rect = this.renderer.domElement.getBoundingClientRect()
-    this.dragStart = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-    Object.assign(this.selectionDiv.style, { display: 'block', left: `${this.dragStart.x}px`, top: `${this.dragStart.y}px`, width: '0px', height: '0px' })
+    // De-etch takes over left-drag on the picked face; otherwise drag the camera.
+    if (this.deEtch && this.pickedFace) {
+      const rect = this.renderer.domElement.getBoundingClientRect()
+      this.dragStart = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+      Object.assign(this.selectionDiv.style, { display: 'block', left: `${this.dragStart.x}px`, top: `${this.dragStart.y}px`, width: '0px', height: '0px' })
+      return
+    }
+    this.orbit = { mode: e.button === 2 || e.shiftKey ? 'pan' : 'rotate', x: e.clientX, y: e.clientY, moved: false }
   }
 
   private onPointerMove(e: PointerEvent): void {
-    if (!this.dragStart) return
-    const rect = this.renderer.domElement.getBoundingClientRect()
-    const x = e.clientX - rect.left,
-      y = e.clientY - rect.top
-    Object.assign(this.selectionDiv.style, {
-      left: `${Math.min(x, this.dragStart.x)}px`,
-      top: `${Math.min(y, this.dragStart.y)}px`,
-      width: `${Math.abs(x - this.dragStart.x)}px`,
-      height: `${Math.abs(y - this.dragStart.y)}px`
-    })
+    if (this.dragStart) {
+      const rect = this.renderer.domElement.getBoundingClientRect()
+      const x = e.clientX - rect.left,
+        y = e.clientY - rect.top
+      Object.assign(this.selectionDiv.style, {
+        left: `${Math.min(x, this.dragStart.x)}px`,
+        top: `${Math.min(y, this.dragStart.y)}px`,
+        width: `${Math.abs(x - this.dragStart.x)}px`,
+        height: `${Math.abs(y - this.dragStart.y)}px`
+      })
+      return
+    }
+    const o = this.orbit
+    if (!o) return
+    const dx = e.clientX - o.x
+    const dy = e.clientY - o.y
+    o.x = e.clientX
+    o.y = e.clientY
+    if (dx || dy) o.moved = true
+    if (o.mode === 'rotate') {
+      this.camYaw -= dx * ROTATE_SPEED // horizontal → spin about world +Z
+      this.camPitch -= dy * ROTATE_SPEED // vertical → tip; no clamp ⇒ full 360°
+    } else {
+      // Pan in the screen plane using the camera's (horizontal) right and up.
+      const panScale = this.camRadius / Math.max(1, this.container.clientHeight)
+      this.tmpRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion)
+      this.tmpUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion)
+      this.camTarget.addScaledVector(this.tmpRight, -dx * panScale).addScaledVector(this.tmpUp, dy * panScale)
+    }
+    this.camDirty = true
   }
 
   private onPointerUp(e: PointerEvent): void {
+    if (this.orbit) {
+      if (this.orbit.moved) this.suppressClick = true // a camera drag isn't a face pick
+      this.orbit = null
+    }
     if (!this.dragStart || !this.pickedFace) {
       this.dragStart = null
       return
@@ -353,17 +403,46 @@ export class Viewer {
     this.clearOverlay()
   }
 
+  /** Position the camera from the turntable state (yaw/pitch/radius/target). */
+  private updateCamera(): void {
+    if (!this.camDirty) return
+    this.camDirty = false
+    // q = yaw(+Z) · pitch(+X). The right axis q·X = (cos yaw, sin yaw, 0) stays
+    // horizontal, so the horizon never rolls (upright feel); both angles are
+    // unbounded and there's no pole singularity (no camera `up`/`lookAt`).
+    this.tmpQ.setFromAxisAngle(Z_AXIS, this.camYaw)
+    this.tmpQ2.setFromAxisAngle(X_AXIS, this.camPitch)
+    this.tmpQ.multiply(this.tmpQ2)
+    this.camera.quaternion.copy(this.tmpQ)
+    this.tmpV.set(0, 0, -1).applyQuaternion(this.tmpQ) // camera forward (−Z)
+    this.camera.position.copy(this.camTarget).addScaledVector(this.tmpV, -this.camRadius)
+  }
+
+  private onWheel(e: WheelEvent): void {
+    e.preventDefault()
+    this.camRadius = THREE.MathUtils.clamp(
+      this.camRadius * Math.exp(e.deltaY * 0.0012),
+      this.camRadiusMin,
+      this.camRadiusMax
+    )
+    this.camDirty = true
+  }
+
   private fitCamera(): void {
     const box = new THREE.Box3().setFromObject(this.modelGroup)
     if (box.isEmpty()) return
     const center = box.getCenter(new THREE.Vector3())
     const size = box.getSize(new THREE.Vector3()).length() || 1
-    this.controls.target.copy(center)
-    this.camera.position.copy(center).add(new THREE.Vector3(size, -size, size * 0.8))
+    this.camTarget.copy(center)
+    this.camRadius = size * 1.3
+    this.camRadiusMin = size * 0.1
+    this.camRadiusMax = size * 12
+    this.camYaw = -0.6
+    this.camPitch = 0.5
     this.camera.near = size / 100
     this.camera.far = size * 100
     this.camera.updateProjectionMatrix()
-    this.controls.update()
+    this.camDirty = true
   }
 
   private resize(): void {
@@ -376,6 +455,11 @@ export class Viewer {
 
 /** Pointer travel (px) below which a de-etch press is treated as a click-to-pick. */
 const DRAG_THRESHOLD_PX = 4
+
+/** Camera rotation per pixel dragged (radians). */
+const ROTATE_SPEED = 0.01
+const Z_AXIS = new THREE.Vector3(0, 0, 1)
+const X_AXIS = new THREE.Vector3(1, 0, 0)
 
 /** Edges sharper than this stay crisp; shallower ones are smoothed (curves, hinge barrels). */
 const CREASE_ANGLE_DEG = 35

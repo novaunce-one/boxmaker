@@ -200,8 +200,15 @@ export function rebindFace(mesh: IndexedMesh, face: FacePlane): FacePlane {
   return { ...face, triangles: found.triangles }
 }
 
+// Per-mesh edge-adjacency cache: `detectFace` runs on every face click, and
+// rebuilding the whole-mesh adjacency each time dominated the click cost. Meshes
+// are stable objects, so a WeakMap keyed on the mesh reuses the first build.
+const adjacencyCache = new WeakMap<IndexedMesh, Map<number, number[]>>()
+
 /** Map each triangle to its edge-adjacent triangles (shared vertex-index edge). */
 function buildEdgeAdjacency(mesh: IndexedMesh): Map<number, number[]> {
+  const cached = adjacencyCache.get(mesh)
+  if (cached) return cached
   const edgeMap = new Map<string, number[]>()
   const tris = mesh.indices.length / 3
   const key = (a: number, b: number): string => (a < b ? `${a}_${b}` : `${b}_${a}`)
@@ -228,5 +235,6 @@ function buildEdgeAdjacency(mesh: IndexedMesh): Map<number, number[]> {
       for (const other of tsel) if (other !== t && Math.abs(other - t) > EPS) list.push(other)
     }
   }
+  adjacencyCache.set(mesh, adj)
   return adj
 }

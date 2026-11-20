@@ -140,14 +140,11 @@ async function bootstrap(): Promise<void> {
     editor.close()
     templateFile = file
     templateSize = boundsSize(pieces)
-    // Measure the template's real hinge gap once (the default export target).
+    // The template's real hinge gap is measured lazily at export (building a
+    // manifold per piece + pairwise minGap is heavy and would freeze the UI right
+    // after load). Until then a blank hinge-gap field simply means "match template".
     templateGap = undefined
     controls.setTemplateGap(undefined)
-    setTimeout(() => {
-      if (templateFile !== file) return // another model was loaded meanwhile
-      templateGap = measureTemplateGap()
-      controls.setTemplateGap(templateGap)
-    }, 0)
     projectRef = null // a fresh model is an untitled project
     controls.setFacePicked(false)
     controls.setModelLoaded(true)
@@ -358,10 +355,18 @@ async function bootstrap(): Promise<void> {
       // Wall guard in template units so walls are still ≥ MIN_WALL_MM once scaled.
       const { pieces: engraved, warnings: cutWarnings } = applyProject(pieces, state, MIN_WALL_MM / scale)
 
-      // Re-open joint gaps the scaling shrank: to the user's gap, else the template's own.
-      if (templateGap === undefined) templateGap = measureTemplateGap()
+      // Re-open joint gaps the scaling shrank: to the user's gap, else the
+      // template's own. Only measure the template gap when it's actually needed
+      // (scaling, or a blank gap field) — the measurement is expensive.
       const enforce = scale !== 1 || state.hingeGapMm !== null
-      const target = enforce ? (state.hingeGapMm ?? templateGap ?? null) : null
+      let target: number | null = null
+      if (enforce) {
+        if (state.hingeGapMm !== null) target = state.hingeGapMm
+        else {
+          if (templateGap === undefined) templateGap = measureTemplateGap()
+          target = templateGap ?? null
+        }
+      }
       const scaled = applyExportScale(engraved, scale, target)
 
       const result = prepareForExport(scaled.pieces, {

@@ -171,7 +171,7 @@ export class Controls {
   private refreshHint(): void {
     const gap =
       this.templateGap === undefined
-        ? 'measuring hinge gap…'
+        ? 'blank gap = match template'
         : this.templateGap === null
           ? 'no hinge gap found'
           : `blank gap = template (${this.templateGap.toFixed(2)} mm)`
